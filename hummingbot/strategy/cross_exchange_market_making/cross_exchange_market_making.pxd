@@ -38,10 +38,48 @@ cdef class CrossExchangeMarketMakingStrategy(StrategyBase):
         bint _hb_app_notification
         list _maker_order_ids
         double _last_conv_rates_logged
+        tuple _current_premium
+
+        bint _enable_reg_offset
+        object _fixed_beta
+
+        object _ema
+        object _fast_ema
+        object _std
+
+        object _ema_length
+        object _fast_ema_length
+        object _initial_ema
+        object _initial_fast_ema
+        object _std_length
+        object _sampling_interval
+        
+        object _last_price_ratio
+        tuple _disparity
+        tuple _trend
+        object _disparity_sensitivity
+        object _disparity_factor
+        object _std_factor
+        object _trend_factor
+
+        object _buy_profit
+        object _sell_profit
+
+        bint _enable_best_price
+        int _order_levels
+        int _buy_levels
+        int _sell_levels
+        object _order_level_spread
+        object _order_level_amount
 
     cdef c_process_market_pair(self,
                                object market_pair,
                                list active_ddex_orders)
+    cdef c_get_bid_ask_prices(self,
+                                object market_pair)
+    cdef c_calculate_premium(self,
+                            object market_pair,
+                            bint is_adjusted)
     cdef c_check_and_hedge_orders(self,
                                   object market_pair)
     cdef object c_get_order_size_after_portfolio_ratio_limit(self,

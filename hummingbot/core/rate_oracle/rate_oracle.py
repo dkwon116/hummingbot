@@ -50,6 +50,9 @@ class RateOracle(NetworkBase):
     _shared_client: Optional[aiohttp.ClientSession] = None
     _cgecko_supported_vs_tokens: List[str] = []
 
+    _krwusd = 0
+    _tether = ["USDT", "USDC", "BUSD"]
+
     binance_price_url = "https://api.binance.com/api/v3/ticker/bookTicker"
     binance_us_price_url = "https://api.binance.us/api/v3/ticker/bookTicker"
     coingecko_usd_price_url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency={}&order=market_cap_desc" \
@@ -57,6 +60,7 @@ class RateOracle(NetworkBase):
     coingecko_supported_vs_tokens_url = "https://api.coingecko.com/api/v3/simple/supported_vs_currencies"
     kucoin_price_url = "https://api.kucoin.com/api/v1/market/allTickers"
     ascend_ex_price_url = "https://ascendex.com/api/pro/v1/ticker"
+    dunamu_krw_url = "https://quotation-api-cdn.dunamu.com/v1/forex/recent?codes=FRX.KRWUSD"
 
     @classmethod
     def get_instance(cls) -> "RateOracle":
@@ -198,7 +202,7 @@ class RateOracle(NetworkBase):
         task_results = await safe_gather(*tasks, return_exceptions=True)
         for task_result in task_results:
             if isinstance(task_result, Exception):
-                cls.logger().error("Unexpected error while retrieving rates from Coingecko. "
+                cls.logger().error("Unexpected error while retrieving rates from Biannce. "
                                    "Check the log file for more info.")
                 break
             else:
@@ -274,6 +278,7 @@ class RateOracle(NetworkBase):
         :return A dictionary of trading pairs and prices
         """
         results = {}
+        # print(f"RO - get coingecko price for vs {vs_currency}")
         if not cls._cgecko_supported_vs_tokens:
             client = await cls._http_client()
             async with client.request("GET", cls.coingecko_supported_vs_tokens_url) as resp:
@@ -290,6 +295,7 @@ class RateOracle(NetworkBase):
                 break
             else:
                 results.update(task_result)
+                results["USD-KRW"] = Decimal(str(cls._krwusd))
         return results
 
     @classmethod
@@ -303,12 +309,19 @@ class RateOracle(NetworkBase):
         """
         results = {}
         client = await cls._http_client()
+        if vs_currency.upper() == "KRW":
+            response = await client.get(cls.dunamu_krw_url)
+            rsp_json = await response.json(content_type=None)
+            cls._krwusd = rsp_json[0]["basePrice"] if "basePrice" in rsp_json[0] else 0
+
         async with client.request("GET", cls.coingecko_usd_price_url.format(vs_currency, page_no)) as resp:
             records = await resp.json(content_type=None)
             for record in records:
                 pair = f'{record["symbol"].upper()}-{vs_currency.upper()}'
                 if record["current_price"]:
                     results[pair] = Decimal(str(record["current_price"]))
+                    if vs_currency.upper() == "KRW" and record["symbol"].upper() in cls._tether:
+                        results[pair] = Decimal(str(cls._krwusd))
         return results
 
     async def start_network(self):

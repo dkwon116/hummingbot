@@ -4,14 +4,17 @@ from hummingbot.client.config.config_validators import (
     validate_connector,
     validate_derivative,
     validate_decimal,
-    validate_int
+    validate_int,
+    validate_bool
 )
 from hummingbot.client.settings import (
     required_exchanges,
     requried_connector_trading_pairs,
     AllConnectorSettings,
 )
+import hummingbot.client.settings as settings
 from decimal import Decimal
+from hummingbot.client.config.config_helpers import parse_cvar_value
 
 
 def exchange_on_validated(value: str) -> None:
@@ -54,6 +57,27 @@ def order_amount_prompt() -> str:
     trading_pair = spot_perpetual_arbitrage_config_map["spot_market"].value
     base_asset, quote_asset = trading_pair.split("-")
     return f"What is the amount of {base_asset} per order? >>> "
+
+
+def update_oracle_settings(value: str):
+    c_map = spot_perpetual_arbitrage_config_map
+    if not (c_map["use_oracle_conversion_rate"].value is not None and
+            c_map["spot_market"].value is not None and
+            c_map["perpetual_market"].value is not None):
+        return
+    use_oracle = parse_cvar_value(c_map["use_oracle_conversion_rate"], c_map["use_oracle_conversion_rate"].value)
+    first_base, first_quote = c_map["spot_market"].value.split("-")
+    second_base, second_quote = c_map["perpetual_market"].value.split("-")
+    if use_oracle and (first_base != second_base or first_quote != second_quote):
+        settings.required_rate_oracle = True
+        settings.rate_oracle_pairs = []
+        if first_base != second_base:
+            settings.rate_oracle_pairs.append(f"{second_base}-{first_base}")
+        if first_quote != second_quote:
+            settings.rate_oracle_pairs.append(f"{second_quote}-{first_quote}")
+    else:
+        settings.required_rate_oracle = False
+        settings.rate_oracle_pairs = []
 
 
 spot_perpetual_arbitrage_config_map = {
@@ -136,4 +160,57 @@ spot_perpetual_arbitrage_config_map = {
         type_str="float",
         validator=lambda v: validate_decimal(v, min_value=0, inclusive=False),
         default=120),
+    "use_oracle_conversion_rate": ConfigVar(
+        key="use_oracle_conversion_rate",
+        type_str="bool",
+        prompt="Do you want to use rate oracle on unmatched trading pairs? (Yes/No) >>> ",
+        prompt_on_new=True,
+        validator=lambda v: validate_bool(v),
+        on_validated=update_oracle_settings),
+    "perp_to_spot_base_conversion_rate": ConfigVar(
+        key="perp_to_spot_base_conversion_rate",
+        prompt="Enter conversion rate for taker base asset value to maker base asset value, e.g. "
+               "if maker base asset is USD and the taker is DAI, 1 DAI is valued at 1.25 USD, "
+               "the conversion rate is 1.25 >>> ",
+        default=Decimal("1"),
+        validator=lambda v: validate_decimal(v, Decimal(0), inclusive=False),
+        type_str="decimal"
+    ),
+    "perp_to_spot_quote_conversion_rate": ConfigVar(
+        key="perp_to_spot_quote_conversion_rate",
+        prompt="Enter conversion rate for taker quote asset value to maker quote asset value, e.g. "
+               "if maker quote asset is USD and the taker is DAI, 1 DAI is valued at 1.25 USD, "
+               "the conversion rate is 1.25 >>> ",
+        default=Decimal("1"),
+        validator=lambda v: validate_decimal(v, Decimal(0), inclusive=False),
+        type_str="decimal"
+    ),
+    "reg_buffer_size": ConfigVar(
+        key="reg_buffer_size",
+        prompt="Sampling length of regression (interval set as 5m)>>> ",
+        default=12,
+        validator=lambda v: validate_decimal(v, 1, 10000),
+        type_str="int",
+    ),
+    "enable_reg_offset": ConfigVar(
+        key="enable_reg_offset",
+        prompt="Use linear regression beta as offset (rolling regression)>>> ",
+        default=False,
+        validator=lambda v: validate_bool(v),
+        type_str="bool",
+    ),
+    "fixed_beta": ConfigVar(
+        key="fixed_beta",
+        prompt="Beta offset to use (Enter 1 to indicate 1% >>>)",
+        default=Decimal("2"),
+        type_str="decimal",
+        validator=lambda v: validate_decimal(v, Decimal(-100), Decimal(100), inclusive=True)
+    ),
+    "min_buffer_sample": ConfigVar(
+        key="min_buffer_sample",
+        prompt="Minimum buffer samples needed before using regression result (use fixed beta until) >>>",
+        default=144,
+        validator=lambda v: validate_decimal(v, 1, 10000),
+        type_str="int",
+    )
 }

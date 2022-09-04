@@ -10,28 +10,19 @@ from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
 
 
 CENTRALIZED = True
-
-
 EXAMPLE_PAIR = "BTC-USDT"
-
-
 DEFAULT_FEES = [0.02, 0.04]
-
-
 SPECIAL_PAIRS = re.compile(r"^(BAT|BNB|HNT|ONT|OXT|USDT|VET)(USD)$")
 RE_4_LETTERS_QUOTE = re.compile(r"^(\w{2,})(BIDR|BKRW|BUSD|BVND|IDRT|TUSD|USDC|USDS|USDT)$")
 RE_3_LETTERS_QUOTE = re.compile(r"^(\w+)(\w{3})$")
 
 
-BROKER_ID = "x-3QreWesy"
-
-
-def get_client_order_id(order_side: str, trading_pair: object):
+def get_client_order_id(order_side: str, trading_pair: object, broker_id):
     nonce = get_tracking_nonce()
     symbols: str = trading_pair.split("-")
     base: str = symbols[0].upper()
     quote: str = symbols[1].upper()
-    return f"{BROKER_ID}-{order_side.upper()[0]}{base[0]}{base[-1]}{quote[0]}{quote[-1]}{nonce}"
+    return f"{broker_id}-{order_side.upper()[0]}{base[0]}{base[-1]}{quote[0]}{quote[-1]}{nonce}"
 
 
 def split_trading_pair(trading_pair: str) -> Optional[Tuple[str, str]]:

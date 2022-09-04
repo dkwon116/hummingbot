@@ -91,7 +91,7 @@ filled_order_delay: null
 hanging_orders_enabled: null
 
 # Spread (from mid price, in percentage) hanging orders will be canceled (Enter 1 to indicate 1%)
-hanging_orders_cancel_pct: null
+# hanging_orders_cancel_pct: null
 
 # Whether to enable order optimization mode (true/false).
 order_optimization_enabled: null
@@ -121,3 +121,16 @@ take_if_crossed: null
 # Please make sure there is a space between : and [
 order_override: null
 
+
+long_order_delay_multiple: null
+short_order_delay_multiple: null
+long_hanging_orders_cancel_pct: null
+short_hanging_orders_cancel_pct: null
+vol_to_spread_multiplier: null
+volatility_buffer_size: null
+accumulate_base: null
+enable_bb_restriction: null
+enable_one_way: null
+vol_avoid_inv_multiplier: null
+aroon_distribution: null
+osc_distribution: null

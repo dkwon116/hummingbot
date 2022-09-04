@@ -69,6 +69,7 @@ from hummingbot.core.data_type.common import OpenOrder
 from hummingbot.core.data_type.trade import Trade
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 import hummingbot.connector.exchange.binance.binance_constants as CONSTANTS
+from hummingbot.client.config.global_config_map import global_config_map
 
 s_logger = None
 s_decimal_0 = Decimal(0)
@@ -110,12 +111,13 @@ cdef class BinanceExchange(ExchangeBase):
     MARKET_SELL_ORDER_CREATED_EVENT_TAG = MarketEvent.SellOrderCreated.value
 
     API_CALL_TIMEOUT = 10.0
-    SHORT_POLL_INTERVAL = 5.0
+    SHORT_POLL_INTERVAL = 10.0
     UPDATE_ORDER_STATUS_MIN_INTERVAL = 10.0
-    LONG_POLL_INTERVAL = 120.0
+    LONG_POLL_INTERVAL = 300.0
     BINANCE_TRADE_TOPIC_NAME = "binance-trade.serialized"
     BINANCE_USER_STREAM_TOPIC_NAME = "binance-user-stream.serialized"
 
+    UPDATE_ORDER_SLOT = float(global_config_map["binance_order_update_slot"].value - 1)
     ORDER_NOT_EXIST_CONFIRMATION_COUNT = 3
 
     @classmethod
@@ -150,10 +152,12 @@ cdef class BinanceExchange(ExchangeBase):
         self._trade_fees = {}  # Dict[trading_pair:str, (maker_fee_percent:Decimal, taken_fee_percent:Decimal)]
         self._last_update_trade_fees_timestamp = 0
         self._status_polling_task = None
+        self._order_status_polling_task = None
         self._user_stream_event_listener_task = None
         self._trading_rules_polling_task = None
         self._async_scheduler = AsyncCallScheduler(call_interval=0.5)
         self._last_poll_timestamp = 0
+        self._check_network_interval = 30.0
 
     @property
     def name(self) -> str:
@@ -225,6 +229,7 @@ cdef class BinanceExchange(ExchangeBase):
             app_warning_msg: str = "Binance API call failed. Check API key and network connection.",
             request_weight: int = 1,
             **kwargs) -> Dict[str, any]:
+        self.logger().debug(f"API Query for {func}")
         async with self._throttler.execute_task(limit_id=func.__name__):
             try:
                 return await self._async_scheduler.call_async(partial(func, *args, **kwargs),
@@ -366,10 +371,10 @@ cdef class BinanceExchange(ExchangeBase):
                 lot_size_filter = [f for f in filters if f.get("filterType") == "LOT_SIZE"][0]
                 min_notional_filter = [f for f in filters if f.get("filterType") == "MIN_NOTIONAL"][0]
 
-                min_order_size = Decimal(lot_size_filter.get("minQty"))
-                tick_size = price_filter.get("tickSize")
-                step_size = Decimal(lot_size_filter.get("stepSize"))
-                min_notional = Decimal(min_notional_filter.get("minNotional"))
+                min_order_size = Decimal(str(lot_size_filter.get("minQty")))
+                tick_size = str(price_filter.get("tickSize"))
+                step_size = Decimal(str(lot_size_filter.get("stepSize")))
+                min_notional = Decimal(str(min_notional_filter.get("minNotional")))
 
                 retval.append(
                     TradingRule(trading_pair,
@@ -481,102 +486,103 @@ cdef class BinanceExchange(ExchangeBase):
                             self.logger().info(f"Recreating missing trade in TradeFill: {trade}")
 
     async def _update_order_status(self):
-        cdef:
+        # cdef:
             # This is intended to be a backup measure to close straggler orders, in case Binance's user stream events
             # are not working.
             # The minimum poll interval for order status is 10 seconds.
-            int64_t last_tick = <int64_t>(self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
-            int64_t current_tick = <int64_t>(self._current_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
+            # int64_t last_tick = <int64_t>(self._last_poll_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
+            # int64_t current_tick = <int64_t>(self._current_timestamp / self.UPDATE_ORDER_STATUS_MIN_INTERVAL)
 
-        if current_tick > last_tick and len(self._in_flight_orders) > 0:
-            tracked_orders = list(self._in_flight_orders.values())
-            tasks = [self.query_api(self._binance_client.get_order,
-                                    symbol=convert_to_exchange_trading_pair(o.trading_pair), origClientOrderId=o.client_order_id)
-                     for o in tracked_orders]
-            self.logger().debug(f"Polling for order status updates of {len(tasks)} orders.")
-            results = await safe_gather(*tasks, return_exceptions=True)
-            for order_update, tracked_order in zip(results, tracked_orders):
-                client_order_id = tracked_order.client_order_id
+        tracked_orders = list(self._in_flight_orders.values())
+        orders_to_update = [o for o in tracked_orders
+                            if ((0 if "//" in o.client_order_id else int(int(time.time()) - int(o.client_order_id[-16:])/1e6)) + 1) % 599 == 0]
+        tasks = [self.query_api(self._binance_client.get_order,
+                                symbol=convert_to_exchange_trading_pair(o.trading_pair), origClientOrderId=o.client_order_id)
+                    for o in orders_to_update]
+        self.logger().debug(f"Polling for order status updates of {len(tasks)} orders.")
+        results = await safe_gather(*tasks, return_exceptions=True)
+        for order_update, tracked_order in zip(results, tracked_orders):
+            client_order_id = tracked_order.client_order_id
 
-                # If the order has already been cancelled or has failed do nothing
-                if client_order_id not in self._in_flight_orders:
-                    continue
+            # If the order has already been cancelled or has failed do nothing
+            if client_order_id not in self._in_flight_orders:
+                continue
 
-                if isinstance(order_update, Exception):
-                    if order_update.code == 2013 or order_update.message == "Order does not exist.":
-                        self._order_not_found_records[client_order_id] = \
-                            self._order_not_found_records.get(client_order_id, 0) + 1
-                        if self._order_not_found_records[client_order_id] < self.ORDER_NOT_EXIST_CONFIRMATION_COUNT:
-                            # Wait until the order not found error have repeated a few times before actually treating
-                            # it as failed. See: https://github.com/CoinAlpha/hummingbot/issues/601
-                            continue
-                        self.c_trigger_event(
-                            self.MARKET_ORDER_FAILURE_EVENT_TAG,
-                            MarketOrderFailureEvent(self._current_timestamp, client_order_id, tracked_order.order_type)
-                        )
-                        self.c_stop_tracking_order(client_order_id)
+            if isinstance(order_update, Exception):
+                if order_update.code == 2013 or order_update.message == "Order does not exist.":
+                    self._order_not_found_records[client_order_id] = \
+                        self._order_not_found_records.get(client_order_id, 0) + 1
+                    if self._order_not_found_records[client_order_id] < self.ORDER_NOT_EXIST_CONFIRMATION_COUNT:
+                        # Wait until the order not found error have repeated a few times before actually treating
+                        # it as failed. See: https://github.com/CoinAlpha/hummingbot/issues/601
+                        continue
+                    self.c_trigger_event(
+                        self.MARKET_ORDER_FAILURE_EVENT_TAG,
+                        MarketOrderFailureEvent(self._current_timestamp, client_order_id, tracked_order.order_type)
+                    )
+                    self.c_stop_tracking_order(client_order_id)
+                else:
+                    self.logger().network(
+                        f"Error fetching status update for the order {client_order_id}: {order_update}.",
+                        app_warning_msg=f"Failed to fetch status update for the order {client_order_id}."
+                    )
+                continue
+
+            # Update order execution status
+            tracked_order.last_state = order_update["status"]
+            order_type = BinanceExchange.to_hb_order_type(order_update["type"])
+            executed_amount_base = Decimal(order_update["executedQty"])
+            executed_amount_quote = Decimal(order_update["cummulativeQuoteQty"])
+
+            if tracked_order.is_done:
+                if not tracked_order.is_failure:
+                    if tracked_order.trade_type is TradeType.BUY:
+                        self.logger().info(f"The market buy order {tracked_order.client_order_id} has completed "
+                                            f"according to order status API.")
+                        self.c_trigger_event(self.MARKET_BUY_ORDER_COMPLETED_EVENT_TAG,
+                                                BuyOrderCompletedEvent(self._current_timestamp,
+                                                                    client_order_id,
+                                                                    tracked_order.base_asset,
+                                                                    tracked_order.quote_asset,
+                                                                    (tracked_order.fee_asset
+                                                                        or tracked_order.base_asset),
+                                                                    executed_amount_base,
+                                                                    executed_amount_quote,
+                                                                    tracked_order.fee_paid,
+                                                                    order_type))
                     else:
-                        self.logger().network(
-                            f"Error fetching status update for the order {client_order_id}: {order_update}.",
-                            app_warning_msg=f"Failed to fetch status update for the order {client_order_id}."
-                        )
-                    continue
-
-                # Update order execution status
-                tracked_order.last_state = order_update["status"]
-                order_type = BinanceExchange.to_hb_order_type(order_update["type"])
-                executed_amount_base = Decimal(order_update["executedQty"])
-                executed_amount_quote = Decimal(order_update["cummulativeQuoteQty"])
-
-                if tracked_order.is_done:
-                    if not tracked_order.is_failure:
-                        if tracked_order.trade_type is TradeType.BUY:
-                            self.logger().info(f"The market buy order {tracked_order.client_order_id} has completed "
-                                               f"according to order status API.")
-                            self.c_trigger_event(self.MARKET_BUY_ORDER_COMPLETED_EVENT_TAG,
-                                                 BuyOrderCompletedEvent(self._current_timestamp,
+                        self.logger().info(f"The market sell order {client_order_id} has completed "
+                                            f"according to order status API.")
+                        self.c_trigger_event(self.MARKET_SELL_ORDER_COMPLETED_EVENT_TAG,
+                                                SellOrderCompletedEvent(self._current_timestamp,
                                                                         client_order_id,
                                                                         tracked_order.base_asset,
                                                                         tracked_order.quote_asset,
                                                                         (tracked_order.fee_asset
-                                                                         or tracked_order.base_asset),
+                                                                        or tracked_order.quote_asset),
                                                                         executed_amount_base,
                                                                         executed_amount_quote,
                                                                         tracked_order.fee_paid,
                                                                         order_type))
-                        else:
-                            self.logger().info(f"The market sell order {client_order_id} has completed "
-                                               f"according to order status API.")
-                            self.c_trigger_event(self.MARKET_SELL_ORDER_COMPLETED_EVENT_TAG,
-                                                 SellOrderCompletedEvent(self._current_timestamp,
-                                                                         client_order_id,
-                                                                         tracked_order.base_asset,
-                                                                         tracked_order.quote_asset,
-                                                                         (tracked_order.fee_asset
-                                                                          or tracked_order.quote_asset),
-                                                                         executed_amount_base,
-                                                                         executed_amount_quote,
-                                                                         tracked_order.fee_paid,
-                                                                         order_type))
+                else:
+                    # check if its a cancelled order
+                    # if its a cancelled order, issue cancel and stop tracking order
+                    if tracked_order.is_cancelled:
+                        self.logger().info(f"Successfully cancelled order {client_order_id}.")
+                        self.c_trigger_event(self.MARKET_ORDER_CANCELLED_EVENT_TAG,
+                                                OrderCancelledEvent(
+                                                    self._current_timestamp,
+                                                    client_order_id))
                     else:
-                        # check if its a cancelled order
-                        # if its a cancelled order, issue cancel and stop tracking order
-                        if tracked_order.is_cancelled:
-                            self.logger().info(f"Successfully cancelled order {client_order_id}.")
-                            self.c_trigger_event(self.MARKET_ORDER_CANCELLED_EVENT_TAG,
-                                                 OrderCancelledEvent(
-                                                     self._current_timestamp,
-                                                     client_order_id))
-                        else:
-                            self.logger().info(f"The market order {client_order_id} has failed according to "
-                                               f"order status API.")
-                            self.c_trigger_event(self.MARKET_ORDER_FAILURE_EVENT_TAG,
-                                                 MarketOrderFailureEvent(
-                                                     self._current_timestamp,
-                                                     client_order_id,
-                                                     order_type
-                                                 ))
-                    self.c_stop_tracking_order(client_order_id)
+                        self.logger().info(f"The market order {client_order_id} has failed according to "
+                                            f"order status API.")
+                        self.c_trigger_event(self.MARKET_ORDER_FAILURE_EVENT_TAG,
+                                                MarketOrderFailureEvent(
+                                                    self._current_timestamp,
+                                                    client_order_id,
+                                                    order_type
+                                                ))
+                self.c_stop_tracking_order(client_order_id)
 
     async def _iter_kafka_messages(self, topic: str) -> AsyncIterable[ConsumerRecord]:
         while True:
@@ -720,7 +726,6 @@ cdef class BinanceExchange(ExchangeBase):
                     self._update_order_fills_from_trades()
                 )
                 await self._history_reconciliation()
-                await self._update_order_status()
                 self._last_poll_timestamp = self._current_timestamp
             except asyncio.CancelledError:
                 raise
@@ -732,13 +737,30 @@ cdef class BinanceExchange(ExchangeBase):
             finally:
                 self._poll_notifier = asyncio.Event()
 
+
+    async def _order_status_polling_loop(self):
+        while True:
+            try:
+                await safe_gather(
+                    self._update_order_status(),
+                )
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().network("Unexpected error while fetching order status.", exc_info=True,
+                                      app_warning_msg="Could not fetch order status from Binance. "
+                                                      "Check network connection.")
+                await asyncio.sleep(0.5)
+
+
     async def _trading_rules_polling_loop(self):
         while True:
             try:
                 await safe_gather(
                     self._update_trading_rules(),
                 )
-                await asyncio.sleep(60)
+                await asyncio.sleep(300)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -779,6 +801,7 @@ cdef class BinanceExchange(ExchangeBase):
         self._trading_rules_polling_task = safe_ensure_future(self._trading_rules_polling_loop())
         if self._trading_required:
             self._status_polling_task = safe_ensure_future(self._status_polling_loop())
+            self._order_status_polling_task = safe_ensure_future(self._order_status_polling_loop())
             self._user_stream_tracker_task = safe_ensure_future(self._user_stream_tracker.start())
             self._user_stream_event_listener_task = safe_ensure_future(self._user_stream_event_listener())
 
@@ -791,13 +814,15 @@ cdef class BinanceExchange(ExchangeBase):
         self._order_book_tracker.stop()
         if self._status_polling_task is not None:
             self._status_polling_task.cancel()
+        if self._order_status_polling_task is not None:
+            self._order_status_polling_task.cancel()
         if self._user_stream_tracker_task is not None:
             self._user_stream_tracker_task.cancel()
         if self._user_stream_event_listener_task is not None:
             self._user_stream_event_listener_task.cancel()
         if self._trading_rules_polling_task is not None:
             self._trading_rules_polling_task.cancel()
-        self._status_polling_task = self._user_stream_tracker_task = \
+        self._status_polling_task = self._order_status_polling_task = self._user_stream_tracker_task = \
             self._user_stream_event_listener_task = None
 
     async def stop_network(self):
@@ -818,8 +843,8 @@ cdef class BinanceExchange(ExchangeBase):
             double poll_interval = (self.SHORT_POLL_INTERVAL
                                     if now - self.user_stream_tracker.last_recv_time > 60.0
                                     else self.LONG_POLL_INTERVAL)
-            int64_t last_tick = <int64_t>(self._last_timestamp / poll_interval)
-            int64_t current_tick = <int64_t>(timestamp / poll_interval)
+            int64_t last_tick = <int64_t>((self._last_timestamp - (self.UPDATE_ORDER_SLOT * 30.0)) / poll_interval)
+            int64_t current_tick = <int64_t>((timestamp - (self.UPDATE_ORDER_SLOT * 30.0)) / poll_interval)
         ExchangeBase.c_tick(self, timestamp)
         self._tx_tracker.c_tick(timestamp)
         if current_tick > last_tick:
@@ -1063,6 +1088,10 @@ cdef class BinanceExchange(ExchangeBase):
             return s_decimal_0
 
         return quantized_amount
+
+    def get_min_order_size(self, trading_pair: str):
+        trading_rule: TradingRule = self._trading_rules[trading_pair]
+        return Decimal(trading_rule.min_order_size)
 
     def get_price(self, trading_pair: str, is_buy: bool) -> Decimal:
         return self.c_get_price(trading_pair, is_buy)

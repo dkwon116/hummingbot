@@ -143,10 +143,12 @@ class PerformanceMetrics:
             precision = 1 / (10 ** precision)
             return Decimal(str(value)).quantize(Decimal(str(precision)))
         step = Decimal("1")
-        if Decimal("10000") > abs(value) > Decimal("100"):
+        if Decimal("10000") > abs(value) > Decimal("1000"):
             step = Decimal("0.1")
-        elif Decimal("100") > abs(value) > Decimal("1"):
+        elif Decimal("1000") > abs(value) > Decimal("100"):
             step = Decimal("0.01")
+        elif Decimal("100") > abs(value) > Decimal("1"):
+            step = Decimal("0.001")
         elif Decimal("1") > abs(value) > Decimal("0.01"):
             step = Decimal("0.0001")
         elif Decimal("0.01") > abs(value) > Decimal("0.0001"):
@@ -287,3 +289,6 @@ class PerformanceMetrics:
 
         self.total_pnl = self.trade_pnl - self.fee_in_quote
         self.return_pct = self.divide(self.total_pnl, self.hold_value)
+
+        self.quote_pnl = self.tot_vol_quote + (self.tot_vol_base * self.cur_price) - self.fee_in_quote
+        self.base_pnl = self.tot_vol_base + (self.tot_vol_quote / self.cur_price) - (self.fee_in_quote / self.cur_price)

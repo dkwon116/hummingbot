@@ -3,6 +3,7 @@ from decimal import Decimal
 import logging
 
 import os.path
+import datetime
 import pandas as pd
 import numpy as np
 from typing import (
@@ -39,6 +40,8 @@ from hummingbot.strategy.pure_market_making.inventory_skew_calculator import cal
 from .aroon_oscillator_indicator cimport AroonOscillatorIndicator, OscillatorPeriod
 from .aroon_oscillator_indicator import AroonOscillatorIndicator, OscillatorPeriod
 
+from ..__utils__.taapi import TaapiIndicators
+from ..__utils__.trailing_indicators.instant_volatility import InstantVolatilityIndicator
 
 NaN = float("nan")
 s_decimal_zero = Decimal(0)
@@ -106,7 +109,6 @@ cdef class AroonOscillatorStrategy(StrategyBase):
                  inventory_target_base_pct: Decimal = s_decimal_zero,
                  inventory_range_multiplier: Decimal = s_decimal_zero,
                  hanging_orders_enabled: bool = False,
-                 hanging_orders_cancel_pct: Decimal = Decimal("0.1"),
                  order_optimization_enabled: bool = False,
                  ask_order_optimization_depth: Decimal = s_decimal_zero,
                  bid_order_optimization_depth: Decimal = s_decimal_zero,
@@ -121,6 +123,19 @@ cdef class AroonOscillatorStrategy(StrategyBase):
                  order_override: Dict[str, List[str]] = {},
                  debug_csv_path: str = '',
                  is_debug: bool = True,
+                 volatility_buffer_size: int = 60,
+                 volatility_sensibility: Decimal = Decimal("0.2"),
+                 vol_to_spread_multiplier: Decimal = Decimal("1.5"),
+                 vol_avoid_inv_multiplier: Decimal = Decimal("2.0"),
+                 long_order_delay_multiple: int = 10,
+                 short_order_delay_multiple: int = 10,
+                 long_hanging_orders_cancel_pct: Decimal = Decimal("0.1"),
+                 short_hanging_orders_cancel_pct: Decimal = Decimal("0.1"),
+                 accumulate_base: bool = False,
+                 enable_bb_restriction: bool = False,
+                 enable_one_way: bool = False,
+                 aroon_distribution: List = [0.25, 0.25, 0.25, 0.25],
+                 osc_distribution: List = [0.25, 0.25, 0.25, 0.25]
                  ):
 
         if price_ceiling != s_decimal_neg_one and price_ceiling < price_floor:
@@ -149,7 +164,6 @@ cdef class AroonOscillatorStrategy(StrategyBase):
         self._inventory_target_base_pct = inventory_target_base_pct
         self._inventory_range_multiplier = inventory_range_multiplier
         self._hanging_orders_enabled = hanging_orders_enabled
-        self._hanging_orders_cancel_pct = hanging_orders_cancel_pct
         self._order_optimization_enabled = order_optimization_enabled
         self._ask_order_optimization_depth = ask_order_optimization_depth
         self._bid_order_optimization_depth = bid_order_optimization_depth
@@ -185,6 +199,27 @@ cdef class AroonOscillatorStrategy(StrategyBase):
         self._bid_increase = s_decimal_zero
         self._debug_csv_path = debug_csv_path
         self._is_debug = is_debug
+
+        self._vol_to_spread_multiplier = vol_to_spread_multiplier
+        self._volatility_sensibility = volatility_sensibility
+        self._avg_vol = InstantVolatilityIndicator(volatility_buffer_size, 1)
+        self._long_order_delay_multiple = long_order_delay_multiple
+        self._short_order_delay_multiple = short_order_delay_multiple
+        self._long_hanging_orders_cancel_pct = long_hanging_orders_cancel_pct
+        self._short_hanging_orders_cancel_pct = short_hanging_orders_cancel_pct
+        self._accumulate_base = accumulate_base
+        self._accumulate_quote = not accumulate_base
+        self._enable_bb_restriction = enable_bb_restriction
+        self._enable_one_way = enable_one_way
+        self._vol_avoid_inv_multiplier = vol_avoid_inv_multiplier
+        self._aroon_distribution = aroon_distribution
+        self._osc_distribution = osc_distribution
+
+        self._buy_count = 0
+        self._sell_count = 0
+        self._stored_orders = []
+        self._indicators = {}
+        self._taapi = TaapiIndicators()
 
         self.c_add_markets([market_info.market])
 
@@ -284,14 +319,6 @@ cdef class AroonOscillatorStrategy(StrategyBase):
     @hanging_orders_enabled.setter
     def hanging_orders_enabled(self, value: bool):
         self._hanging_orders_enabled = value
-
-    @property
-    def hanging_orders_cancel_pct(self) -> Decimal:
-        return self._hanging_orders_cancel_pct
-
-    @hanging_orders_cancel_pct.setter
-    def hanging_orders_cancel_pct(self, value: Decimal):
-        self._hanging_orders_cancel_pct = value
 
     @property
     def bid_spread(self) -> Decimal:
@@ -502,6 +529,122 @@ cdef class AroonOscillatorStrategy(StrategyBase):
     def order_tracker(self):
         return self._sb_order_tracker
 
+    @property
+    def volatility_sensibility(self) -> Decimal:
+        return self._volatility_sensibility
+    
+    @property
+    def avg_vol(self):
+        return self._avg_vol
+
+    @avg_vol.setter
+    def avg_vol(self, indicator: InstantVolatilityIndicator):
+        self._avg_vol = indicator
+
+    @property
+    def vol_to_spread_multiplier(self) -> Decimal:
+        return self._vol_to_spread_multiplier
+
+    @vol_to_spread_multiplier.setter
+    def vol_to_spread_multiplier(self, value):
+        self._vol_to_spread_multiplier = value
+
+    @property
+    def long_hanging_orders_cancel_pct(self) -> Decimal:
+        return self._long_hanging_orders_cancel_pct
+
+    @long_hanging_orders_cancel_pct.setter
+    def long_hanging_orders_cancel_pct(self, value: Decimal):
+        self._long_hanging_orders_cancel_pct = value
+
+    @property
+    def short_hanging_orders_cancel_pct(self) -> Decimal:
+        return self._short_hanging_orders_cancel_pct
+
+    @short_hanging_orders_cancel_pct.setter
+    def short_hanging_orders_cancel_pct(self, value: Decimal):
+        self._short_hanging_orders_cancel_pct = value
+
+    @property
+    def accumulate_base(self) -> bool:
+        return self._accumulate_base
+
+    @accumulate_base.setter
+    def accumulate_base(self, value: bool):
+        self._accumulate_base = value
+    
+    @property
+    def accumulate_quote(self) -> bool:
+        return self._accumulate_quote
+
+    @accumulate_quote.setter
+    def accumulate_quote(self, value: bool):
+        self._accumulate_quote = value
+    
+    @property
+    def enable_bb_restriction(self) -> bool:
+        return self._enable_bb_restriction
+
+    @enable_bb_restriction.setter
+    def enable_bb_restriction(self, value: bool):
+        self._enable_bb_restriction = value
+    
+    @property
+    def enable_one_way(self) -> bool:
+        return self._enable_one_way
+
+    @enable_one_way.setter
+    def enable_one_way(self, value: bool):
+        self._enable_one_way = value
+
+    @property
+    def stored_orders(self) -> List:
+        return self._stored_orders
+
+    @stored_orders.setter
+    def stored_orders(self, value: List):
+        self._stored_orders = value
+    
+    @property
+    def vol_avoid_inv_multiplier(self) -> Decimal:
+        return self._vol_avoid_inv_multiplier
+
+    @vol_avoid_inv_multiplier.setter
+    def vol_avoid_inv_multiplier(self, value):
+        self._vol_avoid_inv_multiplier = value
+
+    @property
+    def taapi(self):
+        return self._taapi
+
+    @taapi.setter
+    def taapi(self, indicator: TaapiIndicators):
+        self._taapi = indicator
+    
+    @property
+    def indicators(self) -> dict:
+        return self._indicators
+
+    @indicators.setter
+    def indicators(self, value):
+        self._indicators = value
+    
+    @property
+    def aroon_distribution(self) -> str:
+        return self._aroon_distribution
+
+    @aroon_distribution.setter
+    def aroon_distribution(self, value):
+        self._aroon_distribution = value
+    
+    @property
+    def osc_distribution(self) -> str:
+        return self._osc_distribution
+
+    @osc_distribution.setter
+    def osc_distribution(self, value):
+        self._osc_distribution = value
+
     def inventory_skew_stats_data_frame(self) -> Optional[pd.DataFrame]:
         cdef:
             ExchangeBase market = self._market_info.market
@@ -666,24 +809,74 @@ cdef class AroonOscillatorStrategy(StrategyBase):
         else:
             lines.extend(["", "  No active maker orders."])
 
-        last_aroon_period = self.aroon_last_period
+        aroon_adj = self.get_adjustments("aroon")
+        ind_fm = self._indicators["5m"]
+        ind_tm = self._indicators["30m"]
+        ind_oh = self._indicators["1h"]
+        ind_fh = self._indicators["4h"]
+
+        ind_fm_ar = ind_fm["aroon"]["values"]
+        ind_tm_ar = ind_tm["aroon"]["values"]
+        ind_oh_ar = ind_oh["aroon"]["values"]
+        ind_fh_ar = ind_fh["aroon"]["values"]
+
+        ind_fm_ar_adj = ind_fm["aroon"]["adjustments"]
+        ind_tm_ar_adj = ind_tm["aroon"]["adjustments"]
+        ind_oh_ar_adj = ind_oh["aroon"]["adjustments"]
+        ind_fh_ar_adj = ind_fh["aroon"]["adjustments"]
+
+        ind_fm_bb = ind_fm["bb"]["values"]
+        ind_tm_bb = ind_tm["bb"]["values"]
+        ind_oh_bb = ind_oh["bb"]["values"]
+        ind_fh_bb = ind_fh["bb"]["values"]
+
+        ind_fm_ema = ind_fm['ema']["values"]
+        ind_tm_ema = ind_tm['ema']["values"]
+        ind_oh_ema = ind_oh['ema']["values"]
+        ind_fh_ema = ind_fh['ema']["values"]
+
         lines.extend([
             "",
             f"  Aroon Indicators:",
-            f"    Aroon Up = {self.aroon_up:.5g}",
-            f"    Aroon Down = {self.aroon_down:.5g}",
-            f"    Aroon Osc = {self.aroon_osc:.3g}",
-            f"    Aroon Indicator Full = {self.aroon_full}, Total periods {self.aroon_period_count}",
-            f"    Current Period (start: {last_aroon_period.start:.0f}, end: {last_aroon_period.end:.0f}, high: {last_aroon_period.high:.5g}, low: {last_aroon_period.low:.5g})",
             f"    Adjusted Ask Spread = {self.ask_spread:.2%}",
             f"    Adjusted Bid Spread = {self.bid_spread:.2%}",
         ])
-        if self.aroon_full or (0 < self._minimum_periods <= self.aroon_period_count):
-            lines.extend([
-                f"    Calculation params = (spread_diff: {self.min_max_spread_diff:.4%}, ask_increase: {self.ask_increase:.4%}, bid_increase: {self.bid_increase:.4%}, trend_factor: {self.trend_factor:.4%}, osc_strength_factor: {self._aroon_osc_strength_factor:.2g})",
-                f"    Ask Spread formula = ({self._minimum_spread:.5g} + ({self.min_max_spread_diff:.6g} * (1 - ({self.aroon_up} / 100)))) * ( 1 + ({self.aroon_osc} / 100 * {self._aroon_osc_strength_factor:.2g}))",
-                f"    Bid Spread formula = ({self._minimum_spread:.5g} + ({self.min_max_spread_diff:.6g} * (1 - ({self.aroon_down} / 100)))) * ( 1 - ({self.aroon_osc} / 100 * {self._aroon_osc_strength_factor:.2g}))",
-            ])
+        
+        lines.extend([
+            f"    Calculation params = (spread_diff: {self.min_max_spread_diff:.4%}, ask_increase: {self.ask_increase:.4%}, bid_increase: {self.bid_increase:.4%}, trend_factor: {self.trend_factor:.4%}, osc_strength_factor: {self._aroon_osc_strength_factor:.2g})",
+            f"    Ask Spread formula = ({self._minimum_spread:.5g} + ({self.min_max_spread_diff:.6g} * (1 - ({aroon_adj['up']} / 100)))) * ( 1 + ({aroon_adj['osc']} / 100 * {self._aroon_osc_strength_factor:.2g}))",
+            f"    Bid Spread formula = ({self._minimum_spread:.5g} + ({self.min_max_spread_diff:.6g} * (1 - ({aroon_adj['down']} / 100)))) * ( 1 - ({aroon_adj['osc']} / 100 * {self._aroon_osc_strength_factor:.2g}))",
+        ])
+        
+        volatility_pct = self._avg_vol.current_value / float(self.get_price()) * 100.0
+        vol_threshold = volatility_pct / 100 * float(self._vol_to_spread_multiplier)
+        vol_adjusted = vol_threshold > self._minimum_spread
+        
+        sell_order_delay = self._short_order_delay_multiple * self._sell_count if self._sell_count > 0 else 1
+        buy_order_delay = self._long_order_delay_multiple * self._buy_count if self._buy_count > 0 else 1
+
+        lines.extend([
+            "",
+            f"  EMA Indicators:",
+            f"    Volatility [{'Active' if self._avg_vol.is_sampling_buffer_full else 'Inactive'}] = {volatility_pct:.3f}% and Vol Adjusted {vol_adjusted} - {vol_threshold*100:.3f}%" ,
+            f"    Sell Delay orders = {self._sell_count} sell orders delay extended to {sell_order_delay * self._filled_order_delay}",
+            f"    Buy Delay orders = {self._buy_count} buy order delay extended to {buy_order_delay * self._filled_order_delay}",
+        ])
+        
+        lines.extend([
+            "",
+            f"  Spread Adjustments:",
+            f"    Aroon[{aroon_adj['ask_increase']:.5g},{aroon_adj['bid_increase']:.5g}] = 5M[{ind_fm_ar_adj['ask_increase']:.5g},{ind_fm_ar_adj['bid_increase']:.5g}] | 30M[{ind_tm_ar_adj['ask_increase']:.5g},{ind_tm_ar_adj['bid_increase']:.5g}] | 1H[{ind_oh_ar_adj['ask_increase']:.5g},{ind_oh_ar_adj['bid_increase']:.5g}] | 4H[{ind_fh_ar_adj['ask_increase']:.5g},{ind_fh_ar_adj['bid_increase']:.5g}]",
+        ])
+
+        lines.extend([
+            "",
+            f"  Indicators:",
+            f"    Aroon[{aroon_adj['up']:.5g},{aroon_adj['down']:.5g}] = 5M[{ind_fm_ar['valueAroonUp']:.5g},{ind_fm_ar['valueAroonDown']:.5g}] | 30M[{ind_tm_ar['valueAroonUp']:.5g},{ind_tm_ar['valueAroonDown']:.5g}] | 1H[{ind_oh_ar['valueAroonUp']:.5g},{ind_oh_ar['valueAroonDown']:.5g}] | 4H[{ind_fh_ar['valueAroonUp']:.5g},{ind_fh_ar['valueAroonDown']:.5g}]",
+            f"    BB = 5M[{ind_fm_bb['valueUpperBand']:.5g},{ind_fm_bb['valueLowerBand']:.5g}] | 30M[{ind_tm_bb['valueUpperBand']:.5g},{ind_tm_bb['valueLowerBand']:.5g}] | 1H[{ind_oh_bb['valueUpperBand']:.5g},{ind_oh_bb['valueLowerBand']:.5g}] | 4H[{ind_fh_bb['valueUpperBand']:.5g},{ind_fh_bb['valueLowerBand']:.5g}]",
+            f"    EMA = 5M[{ind_fm_ema['value']:.5g}] | 30M[{ind_tm_ema['value']:.5g}] | 1H[{ind_oh_ema['value']:.5g}] | 4H[{ind_fh_ema['value']:.5g}]",
+            f"    Last Update = 5M[{ind_fm['last_updated_at']}] | 30M[{ind_tm['last_updated_at']}] | 1H[{ind_oh['last_updated_at']}] | 4H[{ind_fh['last_updated_at']}]",
+        ])
 
         warning_lines.extend(self.balance_warning([self._market_info]))
 
@@ -720,6 +913,14 @@ cdef class AroonOscillatorStrategy(StrategyBase):
                                            (self._logging_options & self.OPTION_LOG_STATUS_REPORT))
             cdef object proposal
         try:
+            ts = datetime.datetime.now()
+            if (ts.second % 15 == 0):
+                self.collect_indicators()
+                
+            if "last_updated_at" not in self._indicators["4h"]:
+                self.logger().warning(f"Waiting for Taapi to update metrics.")
+                return
+
             if not self._all_markets_ready:
                 self._all_markets_ready = all([market.ready for market in self._sb_markets])
                 if not self._all_markets_ready:
@@ -735,10 +936,31 @@ cdef class AroonOscillatorStrategy(StrategyBase):
 
             proposal = None
             asset_mid_price = Decimal("0")
+
+            ###################################
+            # Update trailing indicators
+            price = self.get_price()
+            self._avg_vol.add_sample(price)
+            vol = Decimal(str(self._avg_vol.current_value))
+            
             # update the Aroon Oscillator Indicator with the last trade price data
             self._aroon_osc.c_add_tick(self._current_timestamp, self.get_last_price())
             # use the Aroon Oscillator Indicator to calculate the desired spreads
             self.c_adjust_spreads()
+            
+            ###################################
+            # Adjust buying and sell at right price when short and long EMA same direction
+            # Adjust spread based on volatility below long EMA
+            vol_mult = float(self._vol_to_spread_multiplier)
+            vol_threshold = vol_mult * float(vol) / float(price)
+
+            if (vol_threshold > self._minimum_spread):
+                self._ask_spread = self._ask_spread * (Decimal(str(vol_threshold)) / self._minimum_spread)
+                self._bid_spread = self._bid_spread * (Decimal(str(vol_threshold)) / self._minimum_spread)
+                
+            # Accumulate quote: trade when both short and long ema is uptrend
+            # Accumulate base: trade when both short and long ema is downtrend
+
             # asset_mid_price = self.c_set_mid_price(market_info)
             if self._create_timestamp <= self._current_timestamp:
                 # 1. Create base order proposals
@@ -752,10 +974,16 @@ cdef class AroonOscillatorStrategy(StrategyBase):
                 # 5. Apply budget constraint, i.e. can't buy/sell more than what you have.
                 self.c_apply_budget_constraint(proposal)
 
+                if self._enable_one_way:
+                    self._stored_orders = proposal.sells
+                    for o in self._stored_orders:
+                        self.logger().info(f"Stored sell order of price {o.price}")
+                    proposal.sells = []
                 if not self._take_if_crossed:
                     self.c_filter_out_takers(proposal)
             self.c_cancel_active_orders(proposal)
             self.c_cancel_hanging_orders()
+            self.c_cancel_duplicate_orders()
             self.c_cancel_orders_below_min_spread()
             if self._is_debug:
                 self.dump_debug_variables()
@@ -768,24 +996,60 @@ cdef class AroonOscillatorStrategy(StrategyBase):
         finally:
             self._last_timestamp = timestamp
 
+    def aroon_spread_calc(self, interval):
+        result = {}
+        aroon = self.get_indicator_values(interval, 'aroon')
+        aroon_adj = self._indicators[interval]['aroon']['adjustments']
+        aroon_up = aroon['valueAroonUp']
+        aroon_down = aroon['valueAroonDown']
+        aroon["osc"] = aroon_up - aroon_down
+
+        aroon_adj["ask_increase"] = (self._min_max_spread_diff * (s_decimal_one_oh - Decimal(aroon_up) / s_decimal_one_hundo))
+        aroon_adj["bid_increase"] = (self._min_max_spread_diff * (s_decimal_one_oh - Decimal(aroon_down) / s_decimal_one_hundo))
+        aroon_adj["trend_factor"] = Decimal(aroon["osc"]) / s_decimal_one_hundo * self._aroon_osc_strength_factor
+
     cdef c_adjust_spreads(self):
         self._min_max_spread_diff = self._maximum_spread - self._minimum_spread
 
-        if self._aroon_osc.c_full() or (0 < self._minimum_periods <= self._aroon_osc.c_aroon_period_count()):
-            # make aroon_up a percent and invert it for the ask spread, when aroon up is high, we want to sell
-            self._ask_increase = (self._min_max_spread_diff * (s_decimal_one_oh - Decimal(self._aroon_osc.c_aroon_up()) / s_decimal_one_hundo))
-            # make aroon_down a percent and invert it for the bid spread, when aroon down is high, we want to buy
-            self._bid_increase = (self._min_max_spread_diff * (s_decimal_one_oh - Decimal(self._aroon_osc.c_aroon_down()) / s_decimal_one_hundo))
-            # trend factor is another percentage to adjust the spread by. If there is an ongoing strong trend, we don't want to execute our orders too early
-            self._trend_factor = Decimal(self._aroon_osc.c_aroon_osc()) / s_decimal_one_hundo * self._aroon_osc_strength_factor
+        if len(self._indicators) > 0:
+            intervals = {"5m": 5, "30m": 30, "1h": 60, "4h": 240}
+            dist_i = 0
+            aroon_dist = self._aroon_distribution.split(",")
+            osc_dist = self._osc_distribution.split(",")
+            aroon_adj = self.get_adjustments("aroon")
+            
+            aroon_adj["up"] = aroon_adj["down"] = aroon_adj["osc"] = 0
+            aroon_adj["bid_increase"] = aroon_adj["ask_increase"] = aroon_adj["trend_factor"] = 0
+
+            for interval in intervals:
+                self.aroon_spread_calc(interval)
+                weight = Decimal(aroon_dist[dist_i])
+                osc_weight = Decimal(osc_dist[dist_i])
+                aroon_val = self.get_indicator_values(interval, "aroon")
+                aroon_int_adj = self._indicators[interval]["aroon"]["adjustments"]
+
+                aroon_adj["up"] += aroon_val["valueAroonUp"] * weight
+                aroon_adj["down"] += aroon_val["valueAroonDown"] * weight
+                aroon_adj["bid_increase"] += aroon_int_adj["bid_increase"] * weight
+                aroon_adj["ask_increase"] += aroon_int_adj["ask_increase"] * weight
+                
+                aroon_adj["osc"] += aroon_val["osc"] * osc_weight
+                aroon_adj["trend_factor"] += aroon_int_adj["trend_factor"] * osc_weight
+
+                dist_i += 1
+
+            self._bid_increase = aroon_adj["bid_increase"]
+            self._ask_increase = aroon_adj["ask_increase"]
+            self._trend_factor = aroon_adj["trend_factor"]
+
             # aroon_osc 100% strong uptrend, likely to continue. Adjust the spread_increase to inhibit trading
             self._ask_spread = (self._minimum_spread + self._ask_increase) * (s_decimal_one_oh + self._trend_factor)
             # aroon_osc -100% strong downtrend and likely to continue. Adjust the spread_increase to inhibit trading
             self._bid_spread = (self._minimum_spread + self._bid_increase) * (s_decimal_one_oh - self._trend_factor)
 
             # adjust spreads to not exceed min/max spreads
-            self._ask_spread = min(max(self._ask_spread, self._minimum_spread), self._maximum_spread)
-            self._bid_spread = min(max(self._bid_spread, self._minimum_spread), self._maximum_spread)
+            self._ask_spread = max(self._ask_spread, self._minimum_spread)
+            self._bid_spread = max(self._bid_spread, self._minimum_spread)
         else:
             # when aroon isn't ready, just set the spreads to middle of min/max
             self._bid_spread = self._ask_spread = self._minimum_spread + (self._min_max_spread_diff * Decimal("0.5"))
@@ -866,6 +1130,9 @@ cdef class AroonOscillatorStrategy(StrategyBase):
             proposal.sells = []
 
     cdef c_apply_order_price_modifiers(self, object proposal):
+        if self._enable_bb_restriction:
+            self.c_apply_bb(proposal)
+
         if self._order_optimization_enabled:
             self.c_apply_order_optimization(proposal)
 
@@ -873,6 +1140,8 @@ cdef class AroonOscillatorStrategy(StrategyBase):
             self.c_apply_add_transaction_costs(proposal)
 
     cdef c_apply_order_size_modifiers(self, object proposal):
+        if self._accumulate_base:
+            self.c_apply_short_adjustment(proposal)
         if self._inventory_skew_enabled:
             self.c_apply_inventory_skew(proposal)
 
@@ -881,6 +1150,7 @@ cdef class AroonOscillatorStrategy(StrategyBase):
             ExchangeBase market = self._market_info.market
             object bid_adj_ratio
             object ask_adj_ratio
+            object adj_ratio
             object size
 
         base_balance, quote_balance = self.c_get_adjusted_available_balance(self.active_orders)
@@ -893,18 +1163,46 @@ cdef class AroonOscillatorStrategy(StrategyBase):
             float(self._inventory_target_base_pct),
             float(total_order_size * self._inventory_range_multiplier)
         )
+
+        # decrease bid size to prevent accumulation if base ratio goes over XX%
+        # increase bid size to get more profit aggressively if base ratio goes below XX%
+        # ask size should follow bid size
+
         bid_adj_ratio = Decimal(bid_ask_ratios.bid_ratio)
         ask_adj_ratio = Decimal(bid_ask_ratios.ask_ratio)
+        adj_ratio = ask_adj_ratio if self.accumulate_base else bid_adj_ratio
+
+        
+        self.logger().info(
+            f"{bid_adj_ratio} bid ratio {ask_adj_ratio} ask ratio {adj_ratio} adj ratio"
+            f"{proposal.buys} buy proposal {proposal.sells} sell proposals"
+        )
 
         for buy in proposal.buys:
-            size = buy.size * bid_adj_ratio
+            size = buy.size * adj_ratio
             size = market.c_quantize_order_amount(self.trading_pair, size)
             buy.size = size
 
         for sell in proposal.sells:
-            size = sell.size * ask_adj_ratio
+            size = sell.size * adj_ratio
             size = market.c_quantize_order_amount(self.trading_pair, size, sell.price)
             sell.size = size
+    
+    cdef c_apply_short_adjustment(self, object proposal):
+        cdef:
+            ExchangeBase market = self._market_info.market
+            object size
+            object sell_quote_size
+        
+        sell_quote_size = 0
+
+        for sell in proposal.sells:
+            sell_quote_size = sell.size * sell.price
+
+        for buy in proposal.buys:
+            size = sell_quote_size / buy.price
+            size = market.c_quantize_order_amount(self.trading_pair, size)
+            buy.size = size
 
     cdef c_apply_budget_constraint(self, object proposal):
         cdef:
@@ -963,6 +1261,23 @@ cdef class AroonOscillatorStrategy(StrategyBase):
         top_bid = market.c_get_price(self.trading_pair, False)
         if not top_bid.is_nan():
             proposal.sells = [sell for sell in proposal.sells if sell.price > top_bid]
+
+    cdef c_apply_bb(self, proposal):
+        cdef:
+            ExchangeBase market = self._market_info.market
+
+        bb = self.get_indicator_values('5m', 'bb')
+        upper_bb = Decimal(bb["valueUpperBand"])
+        lower_bb = Decimal(bb["valueLowerBand"])
+        
+        if self.get_price() >= upper_bb:
+            for buy in proposal.buys:
+                buy.price = min(market.c_quantize_order_price(self.trading_pair, upper_bb), buy.price)
+                self.logger().info(f"Above BB upper of {upper_bb}, buy price adjusted to {buy.price.normalize()}")
+        if self.get_price() <= lower_bb:
+            for sell in proposal.sells:
+                sell.price = max(market.c_quantize_order_price(self.trading_pair, lower_bb), sell.price)
+                self.logger().info(f"Below BB lower of {lower_bb}, sell price adjusted to {sell.price.normalize()}")
 
     # Compare the market price with the top bid and top ask price
     cdef c_apply_order_optimization(self, object proposal):
@@ -1075,13 +1390,38 @@ cdef class AroonOscillatorStrategy(StrategyBase):
                 )
                 return
 
-        # delay order creation by filled_order_dalay (in seconds)
+        self._buy_count += 1
+        self._sell_count = 0
+        
+        ###################################
+        # Buy less frequently when in downtrend
         self._create_timestamp = self._current_timestamp + self._filled_order_delay
+        if self._accumulate_quote and not self._enable_one_way:
+            order_delay = self._long_order_delay_multiple * self._buy_count if self._buy_count > 0 else 1
+            self._create_timestamp = self._current_timestamp + (self._filled_order_delay * order_delay)
+
         self._cancel_timestamp = min(self._cancel_timestamp, self._create_timestamp)
 
         if self._hanging_orders_enabled:
             for other_order_id in active_sell_ids:
                 self._hanging_order_ids.append(other_order_id)
+
+        # Place stored sell order as hang. 
+        if self._enable_one_way and len(self._stored_orders) > 0:
+            stored_proposal = Proposal([],self._stored_orders)
+            for o in stored_proposal.sells:
+                profit = (o.price / limit_order_record.price - 1) * 100
+                self.log_with_clock(
+                    logging.INFO,
+                    f"({self.trading_pair}) Placing stored sell order "
+                    f"({o.size} {limit_order_record.base_currency} @ "
+                    f"{o.price} {limit_order_record.quote_currency}) as hanging order for "
+                    f"filled buy order @ {limit_order_record.price} {limit_order_record.quote_currency} [{profit:.2f}%]"
+                )
+                self._hanging_aged_order_prices.append(o.price)
+            
+            self.c_execute_orders_proposal(stored_proposal)
+            self._stored_orders = []
 
         self._filled_buys_balance += 1
         self._last_own_trade_price = limit_order_record.price
@@ -1119,8 +1459,13 @@ cdef class AroonOscillatorStrategy(StrategyBase):
                 )
                 return
 
-        # delay order creation by filled_order_dalay (in seconds)
+        self._sell_count += 1
+        self._buy_count = 0
+
         self._create_timestamp = self._current_timestamp + self._filled_order_delay
+        if self._accumulate_base:
+            order_delay = self._short_order_delay_multiple * self._sell_count if self._sell_count > 0 else 1
+            self._create_timestamp = self._current_timestamp + self._filled_order_delay * order_delay
         self._cancel_timestamp = min(self._cancel_timestamp, self._create_timestamp)
 
         if self._hanging_orders_enabled:
@@ -1194,8 +1539,33 @@ cdef class AroonOscillatorStrategy(StrategyBase):
             orders = [o for o in active_orders if o.client_order_id == h_order_id]
             if orders and price > 0:
                 order = orders[0]
-                if abs(order.price - price)/price >= self._hanging_orders_cancel_pct:
+                sell_over_pct = order.price > price and abs(order.price - price)/price >= self._short_hanging_orders_cancel_pct
+                buy_over_pct = order.price <= price and abs(order.price - price)/price  >= self._long_hanging_orders_cancel_pct
+                
+                if buy_over_pct or sell_over_pct:
                     self.c_cancel_order(self._market_info, order.client_order_id)
+
+    # Cancel orders with same price and size. Could create duplicate order from network error
+    cdef c_cancel_duplicate_orders(self):
+        cdef:
+            list active_orders = self.active_orders
+            list dup_orders
+        
+        dup_orders = []
+        if len(active_orders) == 0:
+            return
+
+        for order in active_orders:
+            if order.client_order_id in dup_orders:
+                continue
+
+            for other_order in active_orders:
+                is_diff_order = order.client_order_id != other_order.client_order_id
+                is_dup_order = order.price == other_order.price and order.quantity == other_order.quantity
+                if is_diff_order and is_dup_order:
+                    self.logger().info(f"Found duplicate order {other_order.client_order_id} for {order.client_order_id}")
+                    self.c_cancel_order(self._market_info, other_order.client_order_id)
+                    dup_orders.append(other_order.client_order_id)
 
     # Cancel Non-Hanging, Active Orders if Spreads are below minimum_spread
     cdef c_cancel_orders_below_min_spread(self):
@@ -1362,3 +1732,94 @@ cdef class AroonOscillatorStrategy(StrategyBase):
                             self.bid_increase,
                             self.trend_factor)])
         df.to_csv(self._debug_csv_path, mode='a', header=False, index=False)
+
+    def initialize_indicators(self):
+        self.logger().info(f"Initializing Indicators")
+        
+        self._indicators["5m"] = {
+            "aroon": {"values": {},"adjustments": {"bid_increase": 0, "ask_increase": 0, "trend_factor": 0, "osc": 0}},
+            "bb": {"values": {}, "adjustments": {}},
+            "ema": {"values": {}, "adjustments": {}}
+        }
+        self._indicators["30m"] = {
+            "aroon": {"values": {},"adjustments": {"bid_increase": 0, "ask_increase": 0, "trend_factor": 0, "osc": 0}},
+            "bb": {"values": {}, "adjustments": {}},
+            "ema": {"values": {}, "adjustments": {}}
+        }
+        self._indicators["1h"] = {
+            "aroon": {"values": {},"adjustments": {"bid_increase": 0, "ask_increase": 0, "trend_factor": 0, "osc": 0}},
+            "bb": {"values": {}, "adjustments": {}},
+            "ema": {"values": {}, "adjustments": {}}
+        }
+        self._indicators["4h"] = {
+            "aroon": {"values": {},"adjustments": {"bid_increase": 0, "ask_increase": 0, "trend_factor": 0, "osc": 0}},
+            "bb": {"values": {}, "adjustments": {}},
+            "ema": {"values": {}, "adjustments": {}}
+        }
+        self._indicators["adj"] = {
+            "aroon": {"bid_increase": 0,"ask_increase": 0,"trend_factor": 0,"osc": 0}
+        }
+
+    def get_set_indicator(self, interval):
+        self.logger().info(f"Updating indicator from Taapi for {interval}")
+        try:
+            indicators = [{
+                    "id": f"aroon",
+                    "indicator": "aroon",
+                    "optInTimePeriod": self._period_length
+                }, {
+                    "id": f"bb",
+                    "indicator": "bbands2",
+                    "period": 100,
+                    "stddev": 2
+                }, {
+                    "id": f"ema",
+                    "indicator": "ema",
+                    "optInTimePeriod": 100
+                }]
+
+            symbol = self.trading_pair.replace("-","/")
+            interval_indicators = self._indicators[interval]
+            data = self._taapi.get_indicators(symbol, interval, indicators)
+
+            for d in data:
+                indicator_id = d['id']
+                interval_indicators[indicator_id]["values"] = d["result"]
+            
+            interval_indicators["last_updated_at"] = datetime.datetime.now()
+            self.logger().debug(f"Indicator set for {interval} - {interval_indicators}")
+        except:
+            self.logger().info(f"Can't get {interval} - {interval_indicators} from Taapi")
+        
+    def get_indicator_values(self, interval, indicator):
+        return self._indicators[interval][indicator]["values"]
+    
+    def get_adjustments(self, indicator):
+        return self._indicators["adj"][indicator]
+
+    def collect_indicators(self):
+        ts = datetime.datetime.now()
+        intervals = {"5m": 5, "30m": 30, "1h": 60, "4h": 240}
+
+        if len(self._indicators) == 0:
+            self.initialize_indicators()
+
+        for interval in intervals:
+            if "last_updated_at" not in self._indicators[interval]:
+                self.get_set_indicator(interval)
+
+        if ts.minute % 5 == 0:
+            if ts >= (self._indicators["5m"]["last_updated_at"] + datetime.timedelta(minutes=4)):
+                self.get_set_indicator("5m")
+
+            if ts.minute % 30 == 0:
+                if ts >= (self._indicators["30m"]["last_updated_at"] + datetime.timedelta(minutes=29)):
+                    self.get_set_indicator("30m")
+
+                if ts.minute % 60 == 0:
+                    if ts >= (self._indicators["1h"]["last_updated_at"] + datetime.timedelta(minutes=59)):
+                        self.get_set_indicator("1h")
+
+                    if ts.hour % 4 == 0:
+                        if ts >= (self._indicators["4h"]["last_updated_at"] + datetime.timedelta(minutes=239)):
+                            self.get_set_indicator("4h")

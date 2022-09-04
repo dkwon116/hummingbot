@@ -13,7 +13,9 @@ class CLIHandler(StreamHandler):
         exc_info = record.exc_info
         if record.exc_info is not None:
             record.exc_info = None
-        retval = f'{datetime.fromtimestamp(record.created).strftime("%H:%M:%S")} - {record.name.split(".")[-1]} - ' \
+        # retval = f'{datetime.fromtimestamp(record.created).strftime("%H:%M:%S")} - {record.name.split(".")[-1]} - ' \
+        #          f'{record.msg}'
+        retval = f'{datetime.fromtimestamp(record.created).strftime("%H:%M:%S")} - ' \
                  f'{record.msg}'
         if exc_info:
             retval += " (See log file for stack trace dump)"

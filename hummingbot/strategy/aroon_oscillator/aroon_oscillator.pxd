@@ -27,7 +27,6 @@ cdef class AroonOscillatorStrategy(StrategyBase):
         object _inventory_target_base_pct
         object _inventory_range_multiplier
         bint _hanging_orders_enabled
-        object _hanging_orders_cancel_pct
         bint _order_optimization_enabled
         object _ask_order_optimization_depth
         object _bid_order_optimization_depth
@@ -63,6 +62,26 @@ cdef class AroonOscillatorStrategy(StrategyBase):
         str _debug_csv_path
         bint _is_debug
 
+        object _vol_to_spread_multiplier
+        object _volatility_sensibility
+        object _avg_vol
+        object _long_order_delay_multiple
+        object _short_order_delay_multiple
+        object _long_hanging_orders_cancel_pct
+        object _short_hanging_orders_cancel_pct
+        object _buy_count
+        object _sell_count
+        bint _accumulate_base
+        bint _accumulate_quote
+        bint _enable_bb_restriction
+        bint _enable_one_way
+        object _stored_orders
+        object _vol_avoid_inv_multiplier
+        object _taapi
+        object _indicators
+        str _aroon_distribution
+        str _osc_distribution
+
         AroonOscillatorIndicator _aroon_osc
 
     cdef object c_get_mid_price(self)
@@ -71,9 +90,11 @@ cdef class AroonOscillatorStrategy(StrategyBase):
     cdef c_adjust_spreads(self)
     cdef c_apply_order_levels_modifiers(self, object proposal)
     cdef c_apply_price_band(self, object proposal)
+    cdef c_apply_bb(self, object proposal)
     cdef c_apply_order_price_modifiers(self, object proposal)
     cdef c_apply_order_size_modifiers(self, object proposal)
     cdef c_apply_inventory_skew(self, object proposal)
+    cdef c_apply_short_adjustment(self, object proposal)
     cdef c_apply_budget_constraint(self, object proposal)
 
     cdef c_filter_out_takers(self, object proposal)
@@ -82,6 +103,7 @@ cdef class AroonOscillatorStrategy(StrategyBase):
     cdef bint c_is_within_tolerance(self, list current_prices, list proposal_prices)
     cdef c_cancel_active_orders(self, object proposal)
     cdef c_cancel_hanging_orders(self)
+    cdef c_cancel_duplicate_orders(self)
     cdef c_cancel_orders_below_min_spread(self)
     cdef c_aged_order_refresh(self)
     cdef bint c_to_create_orders(self, object proposal)

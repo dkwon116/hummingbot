@@ -60,6 +60,7 @@ cdef class HedgeStrategy(StrategyBase):
                     hedge_interval: float = 10,
                     slippage: Decimal = .01,
                     max_order_age: float = 100.0,
+                    spot_offset_amount: Decimal = 0,
                     ):
 
         self._exchanges = exchanges
@@ -71,17 +72,23 @@ cdef class HedgeStrategy(StrategyBase):
         self._status_report_interval = status_report_interval
         self._position_mode = PositionMode.HEDGE if position_mode == "Hedge" else PositionMode.ONEWAY
         self._leverage = leverage
-        self.c_add_markets([exchanges.maker, exchanges.taker])
+        # self.c_add_markets([exchanges.maker, exchanges.taker])
+        self.c_add_markets([exchanges.taker])
         self._last_trade_time = {}
         self._shadow_taker_balance = {}
         self._update_shadow_balance_interval = 600
         self._hedge_interval = hedge_interval
         self._slippage = slippage
         self._max_order_age = max_order_age
+        self._spot_offset_amount = spot_offset_amount
 
     @property
     def market_info_to_active_orders(self) -> Dict[MarketTradingPairTuple, List[LimitOrder]]:
         return self._sb_order_tracker.market_pair_to_active_orders
+
+    @property
+    def market_infos(self):
+        return self._market_infos
 
     def get_shadow_position(self, trading_pair: str):
         return self._shadow_taker_balance[trading_pair]
@@ -174,10 +181,10 @@ cdef class HedgeStrategy(StrategyBase):
         price = price*(Decimal(1) + Decimal(self._slippage)) if is_buy else price*(Decimal(1) - Decimal(self._slippage))
         if quantized_order_amount*price>self._minimum_trade:
             if is_buy:
-                order_id = self.c_buy_with_specific_market(market_pair, quantized_order_amount,
+                order_id = self.buy_with_specific_market(market_pair, quantized_order_amount,
                                                            order_type=OrderType.LIMIT, price=price, expiration_seconds=NaN)
             else:
-                order_id = self.c_sell_with_specific_market(market_pair, quantized_order_amount,
+                order_id = self.sell_with_specific_market(market_pair, quantized_order_amount,
                                                             order_type=OrderType.LIMIT, price=price, expiration_seconds=NaN)
             self.log_with_clock(logging.INFO,
                                 f"Place {'Buy' if is_buy else 'Sell'} {quantized_order_amount} {trading_pair}")
@@ -211,7 +218,7 @@ cdef class HedgeStrategy(StrategyBase):
                 taker_balance = self.get_position_amount(trading_pair)
                 self.set_shadow_position(trading_pair, taker_balance)
                 position_updated=True
-            maker_balance = self.get_balance(maker_asset)
+            maker_balance = self.get_balance(maker_asset) + self._spot_offset_amount
             taker_balance = self.get_shadow_position(trading_pair)
             hedge_amount = -(maker_balance*self._hedge_ratio + taker_balance)
             is_buy = hedge_amount > 0
@@ -235,7 +242,7 @@ cdef class HedgeStrategy(StrategyBase):
         for maker_asset in self._market_infos:
             market_pair = self._market_infos[maker_asset]
             trading_pair=market_pair.trading_pair
-            maker_balance = self.get_balance(maker_asset)
+            maker_balance = self.get_balance(maker_asset) + self._spot_offset_amount
             taker_balance = self.get_shadow_position(trading_pair)
             mid_price = market_pair.get_mid_price()
             difference = - (maker_balance + taker_balance)

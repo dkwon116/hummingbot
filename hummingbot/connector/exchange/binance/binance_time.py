@@ -14,7 +14,7 @@ class BinanceTime:
     """
     Used to monkey patch Binance client's time module to adjust request timestamp when needed
     """
-    BINANCE_TIME_API = "https://api.binance.com/api/v1/time"
+    BINANCE_TIME_API = "https://api.binance.com/api/v3/time"
     NaN = float("nan")
     _bt_logger = None
     _bt_shared_instance = None
@@ -31,7 +31,7 @@ class BinanceTime:
             cls._bt_shared_instance = BinanceTime()
         return cls._bt_shared_instance
 
-    def __init__(self, check_interval: float = 60.0):
+    def __init__(self, check_interval: float = 300.0):
         self._time_offset_ms: Deque[float] = deque([])
         self._set_server_time_offset_task: Optional[asyncio.Task] = None
         self._started: bool = False
@@ -52,6 +52,7 @@ class BinanceTime:
 
     def add_time_offset_ms_sample(self, offset: float):
         self._time_offset_ms.append(offset)
+        self.logger().debug(f"Add offset sample - offset {offset} array {self._time_offset_ms}")
         while len(self._time_offset_ms) > self._median_window:
             self._time_offset_ms.popleft()
 
@@ -74,6 +75,7 @@ class BinanceTime:
             self._started = False
 
     def schedule_update_server_time_offset(self) -> asyncio.Task:
+        self.logger().debug("Scheduling server time offset update")
         # If an update task is already scheduled, don't do anything.
         if self._scheduled_update_task is not None and not self._scheduled_update_task.done():
             return self._scheduled_update_task
@@ -98,6 +100,7 @@ class BinanceTime:
 
     async def update_server_time_offset(self):
         try:
+            self.logger().debug("Updating server time offset")
             local_before_ms: float = time.perf_counter() * 1e3
             async with aiohttp.ClientSession() as session:
                 resp = await session.get(self.BINANCE_TIME_API)
@@ -108,6 +111,7 @@ class BinanceTime:
             time_offset_ms: float = binance_server_time_ms - local_server_time_pre_image_ms
             self.add_time_offset_ms_sample(time_offset_ms)
             self._last_update_local_time = time.perf_counter()
+            self.logger().debug(f"Update server time - local before after ms {local_server_time_pre_image_ms} binance ms {binance_server_time_ms}")
         except asyncio.CancelledError:
             raise
         except Exception:

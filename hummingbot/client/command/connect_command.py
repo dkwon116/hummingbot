@@ -218,3 +218,6 @@ class ConnectCommand:
             return err_msg
         err_msg = CeloCLI.unlock_account(celo_address, celo_password)
         return err_msg
+
+    async def _sleep(self, delay: float):
+        await asyncio.sleep(delay)

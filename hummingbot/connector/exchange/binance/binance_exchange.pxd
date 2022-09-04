@@ -19,6 +19,7 @@ cdef class BinanceExchange(ExchangeBase):
         double _last_update_trade_fees_timestamp
         object _data_source_type
         public object _status_polling_task
+        public object _order_status_polling_task
         public object _user_stream_event_listener_task
         public object _user_stream_tracker_task
         public object _trading_rules_polling_task

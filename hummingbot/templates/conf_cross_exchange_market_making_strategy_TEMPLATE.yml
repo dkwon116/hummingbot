@@ -82,3 +82,31 @@ slippage_buffer: null
 
 # For more detailed information, see:
 # https://docs.hummingbot.io/strategies/cross-exchange-market-making/#configuration-parameters
+
+
+
+ema_length: null
+fast_ema_length: null
+initial_ema: null
+initial_fast_ema: null
+std_length: null
+sampling_interval: null
+
+enable_reg_offset: null
+fixed_beta: null
+
+disparity_sensitivity: null
+disparity_factor: null
+std_factor: null
+trend_factor: null
+
+enable_best_price: null
+
+# Number of levels of orders to place on each side of the order book.
+order_levels: null
+
+# Increase or decrease size of consecutive orders after the first order (if order_levels > 1).
+order_level_amount: null
+
+# Order price space between orders (if order_levels > 1).
+order_level_spread: null

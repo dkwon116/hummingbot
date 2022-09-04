@@ -54,6 +54,7 @@ from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.core.utils.estimate_fee import estimate_fee
 from hummingbot.logger import HummingbotLogger
+from hummingbot.client.config.global_config_map import global_config_map
 
 
 class MethodType(Enum):
@@ -64,7 +65,6 @@ class MethodType(Enum):
 
 
 bpm_logger = None
-
 
 class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
     MARKET_RECEIVED_ASSET_EVENT_TAG = MarketEvent.ReceivedAsset
@@ -85,6 +85,8 @@ class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
     ORDER_NOT_EXIST_CONFIRMATION_COUNT = 3
     HEARTBEAT_TIME_INTERVAL = 30.0
     ONE_HOUR_INTERVAL = 3600.0
+
+    BROKER_ID = global_config_map["binance_broker_id"].value
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -321,7 +323,7 @@ class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
             price: object = s_decimal_NaN, **kwargs) -> str:
 
         t_pair: str = trading_pair
-        order_id: str = utils.get_client_order_id("buy", t_pair)
+        order_id: str = utils.get_client_order_id("buy", t_pair, self.BROKER_ID)
         safe_ensure_future(self.execute_buy(order_id, trading_pair, amount, order_type, kwargs["position_action"], price))
         return order_id
 
@@ -338,7 +340,7 @@ class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
              price: object = s_decimal_NaN, **kwargs) -> str:
 
         t_pair: str = trading_pair
-        order_id: str = utils.get_client_order_id("sell", t_pair)
+        order_id: str = utils.get_client_order_id("sell", t_pair, self.BROKER_ID)
         safe_ensure_future(self.execute_sell(order_id, trading_pair, amount, order_type, kwargs["position_action"], price))
         return order_id
 
@@ -433,10 +435,16 @@ class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
         # current_price: object = self.get_price(trading_pair, False)
         notional_size: object
         quantized_amount = ExchangeBase.quantize_order_amount(self, trading_pair, amount)
-        if quantized_amount < trading_rule.min_order_size:
-            return Decimal(0)
+
+        if price != Decimal(0):
+            if quantized_amount * price < trading_rule.min_notional_size:
+                return Decimal(0)
 
         return quantized_amount
+
+    def get_min_order_size(self, trading_pair: str):
+        trading_rule: TradingRule = self._trading_rules[trading_pair]
+        return Decimal(trading_rule.min_order_size)
 
     def get_order_price_quantum(self, trading_pair: str, price: object):
         trading_rule: TradingRule = self._trading_rules[trading_pair]
@@ -565,7 +573,7 @@ class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
                     for asset in update_data.get("B", []):
                         asset_name = asset["a"]
                         self._account_balances[asset_name] = Decimal(asset["wb"])
-                        self._account_available_balances[asset_name] = Decimal(asset["cw"])
+                        # self._account_available_balances[asset_name] = Decimal(asset["cw"])
 
                     # update position
                     for asset in update_data.get("P", []):
@@ -584,6 +592,9 @@ class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
                                                          amount = Decimal(asset["pa"]))
                         else:
                             await self._update_positions()
+                    await self._update_balances()
+                    await self._update_positions()
+
                 elif event_type == "MARGIN_CALL":
                     positions = event_message.get("p", [])
                     total_maint_margin_required = 0
@@ -810,6 +821,7 @@ class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
             entry_price = Decimal(position.get("entryPrice"))
             amount = Decimal(position.get("positionAmt"))
             leverage = Decimal(position.get("leverage"))
+            liquidation_price = Decimal(position.get("liquidationPrice"))
             pos_key = self.position_key(trading_pair, position_side)
             if amount != 0:
                 self._account_positions[pos_key] = Position(
@@ -818,7 +830,8 @@ class BinancePerpetualDerivative(ExchangeBase, PerpetualTrading):
                     unrealized_pnl=unrealized_pnl,
                     entry_price=entry_price,
                     amount=amount,
-                    leverage=leverage
+                    leverage=leverage,
+                    liquidation_price=liquidation_price
                 )
             else:
                 if pos_key in self._account_positions:

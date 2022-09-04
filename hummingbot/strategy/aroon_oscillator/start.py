@@ -39,7 +39,6 @@ def start(self):
         inventory_range_multiplier = c_map.get("inventory_range_multiplier").value
         filled_order_delay = c_map.get("filled_order_delay").value
         hanging_orders_enabled = c_map.get("hanging_orders_enabled").value
-        hanging_orders_cancel_pct = c_map.get("hanging_orders_cancel_pct").value / Decimal('100')
         order_optimization_enabled = c_map.get("order_optimization_enabled").value
         ask_order_optimization_depth = c_map.get("ask_order_optimization_depth").value
         bid_order_optimization_depth = c_map.get("bid_order_optimization_depth").value
@@ -48,6 +47,22 @@ def start(self):
         order_refresh_tolerance_pct = c_map.get("order_refresh_tolerance_pct").value / Decimal('100')
         order_override = c_map.get("order_override").value
         cancel_order_spread_threshold = c_map.get("cancel_order_spread_threshold").value / Decimal('100')
+
+        volatility_buffer_size = c_map.get("volatility_buffer_size").value
+        vol_to_spread_multiplier = c_map.get("vol_to_spread_multiplier").value
+        long_order_delay_multiple = c_map.get("long_order_delay_multiple").value
+        short_order_delay_multiple = c_map.get("short_order_delay_multiple").value
+
+        long_hanging_orders_cancel_pct = c_map.get("long_hanging_orders_cancel_pct").value / Decimal('100')
+        short_hanging_orders_cancel_pct = c_map.get("short_hanging_orders_cancel_pct").value / Decimal('100')
+
+        accumulate_base = c_map.get("accumulate_base").value
+        enable_bb_restriction = c_map.get("enable_bb_restriction").value
+        enable_one_way = c_map.get("enable_one_way").value
+        vol_avoid_inv_multiplier = c_map.get("vol_avoid_inv_multiplier").value
+
+        aroon_distribution = c_map.get("aroon_distribution").value
+        osc_distribution = c_map.get("osc_distribution").value
 
         trading_pair: str = raw_trading_pair
         maker_assets: Tuple[str, str] = self._initialize_market_assets(exchange, [trading_pair])[0]
@@ -92,13 +107,24 @@ def start(self):
             take_if_crossed=take_if_crossed,
             price_ceiling=price_ceiling,
             price_floor=price_floor,
-            hanging_orders_cancel_pct=hanging_orders_cancel_pct,
+            long_hanging_orders_cancel_pct=long_hanging_orders_cancel_pct,
+            short_hanging_orders_cancel_pct=short_hanging_orders_cancel_pct,
             order_refresh_tolerance_pct=order_refresh_tolerance_pct,
             cancel_order_spread_threshold=cancel_order_spread_threshold,
             hb_app_notification=True,
             order_override={} if order_override is None else order_override,
             debug_csv_path=debug_csv_path,
-            is_debug=True
+            is_debug=True,
+            volatility_buffer_size = volatility_buffer_size,
+            vol_to_spread_multiplier = vol_to_spread_multiplier,
+            long_order_delay_multiple = long_order_delay_multiple,
+            short_order_delay_multiple = short_order_delay_multiple,
+            accumulate_base = accumulate_base,
+            enable_bb_restriction = enable_bb_restriction,
+            enable_one_way = enable_one_way,
+            vol_avoid_inv_multiplier = vol_avoid_inv_multiplier,
+            aroon_distribution = aroon_distribution,
+            osc_distribution = osc_distribution
         )
     except Exception as e:
         self._notify(str(e))

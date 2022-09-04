@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Dict, List, Tuple
 
 import pandas as pd
+import numpy as np
 
 from hummingbot.connector.budget_checker import OrderCandidate
 from hummingbot.connector.connector_base import ConnectorBase
@@ -25,6 +26,8 @@ from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.logger import HummingbotLogger
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.strategy_py_base import StrategyPyBase
+from hummingbot.core.rate_oracle.rate_oracle import RateOracle
+from ..__utils__.linear_regression import LinearRegression
 
 from .arb_proposal import ArbProposal, ArbProposalSide
 
@@ -65,6 +68,13 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                     spot_market_slippage_buffer: Decimal = Decimal("0"),
                     perp_market_slippage_buffer: Decimal = Decimal("0"),
                     next_arbitrage_opening_delay: float = 120,
+                    use_oracle_conversion_rate: bool = False,
+                    perp_to_spot_base_conversion_rate: Decimal = Decimal("1"),
+                    perp_to_spot_quote_conversion_rate: Decimal = Decimal("1"),
+                    reg_buffer_size: int = 288,
+                    min_buffer_sample: int = 144,
+                    enable_reg_offset: bool = False,
+                    fixed_beta: Decimal = Decimal("0.02"),
                     status_report_interval: float = 10):
         """
         :param spot_market_info: The spot market info
@@ -104,6 +114,15 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._last_arb_op_reported_ts = 0
         perp_market_info.market.set_leverage(perp_market_info.trading_pair, self._perp_leverage)
 
+        self._use_oracle_conversion_rate = use_oracle_conversion_rate
+        self._perp_to_spot_base_conversion_rate = perp_to_spot_base_conversion_rate
+        self._perp_to_spot_quote_conversion_rate = perp_to_spot_quote_conversion_rate
+        self._reg_buffer_size = reg_buffer_size
+        self._min_buffer_sample = min_buffer_sample
+        self._enable_reg_offset = enable_reg_offset
+        self._fixed_beta = fixed_beta
+        self._lin_reg = LinearRegression(sampling_length=reg_buffer_size)
+
     @property
     def strategy_state(self) -> StrategyState:
         return self._strategy_state
@@ -125,6 +144,42 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self._order_amount = value
 
     @property
+    def reg_buffer_size(self) -> Decimal:
+        return self._reg_buffer_size
+
+    @reg_buffer_size.setter
+    def reg_buffer_size(self, value):
+        self._reg_buffer_size = value
+    
+    @property
+    def min_buffer_sample(self) -> Decimal:
+        return self._min_buffer_sample
+
+    @min_buffer_sample.setter
+    def min_buffer_sample(self, value):
+        self._min_buffer_sample = value
+
+    @property
+    def enable_reg_offset(self) -> Decimal:
+        return self._enable_reg_offset
+
+    @property
+    def fixed_beta(self) -> Decimal:
+        return self._fixed_beta
+
+    @fixed_beta.setter
+    def fixed_beta(self, value):
+        self._fixed_beta = value
+    
+    @property
+    def lin_reg(self):
+        return self._lin_reg
+
+    @lin_reg.setter
+    def lin_reg(self, indicator: LinearRegression):
+        self._lin_reg = indicator
+
+    @property
     def market_info_to_active_orders(self) -> Dict[MarketTradingPairTuple, List[LimitOrder]]:
         return self._sb_order_tracker.market_pair_to_active_orders
 
@@ -132,6 +187,52 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
     def perp_positions(self) -> List[Position]:
         return [s for s in self._perp_market_info.market.account_positions.values() if
                 s.trading_pair == self._perp_market_info.trading_pair and s.amount != s_decimal_zero]
+
+    def get_perp_to_spot_conversion_rate(self) -> Tuple[str, Decimal, str, Decimal]:
+        """
+        Find conversion rates from spot market to perp market
+        :return: A tuple of quote pair symbol, quote conversion rate source, quote conversion rate,
+        base pair symbol, base conversion rate source, base conversion rate
+        """
+        quote_rate = Decimal("1")
+        quote_pair = f"{self._perp_market_info.quote_asset}-{self._spot_market_info.quote_asset}"
+        quote_rate_source = "fixed"
+        if self._use_oracle_conversion_rate:
+            if self._perp_market_info.quote_asset != self._spot_market_info.quote_asset:
+                quote_rate_source = RateOracle.source.name
+                quote_rate = RateOracle.get_instance().rate(quote_pair)
+        else:
+            quote_rate = self._perp_to_spot_quote_conversion_rate
+        base_rate = Decimal("1")
+        base_pair = f"{self._perp_market_info.base_asset}-{self._spot_market_info.base_asset}"
+        base_rate_source = "fixed"
+        if self._use_oracle_conversion_rate:
+            if self._perp_market_info.base_asset != self._spot_market_info.base_asset:
+                base_rate_source = RateOracle.source.name
+                base_rate = RateOracle.get_instance().rate(base_pair)
+        else:
+            base_rate = self._perp_to_spot_base_conversion_rate
+        return quote_pair, quote_rate_source, quote_rate, base_pair, base_rate_source, base_rate
+
+    def market_conversion_rate(self, is_adjusted) -> Decimal:
+        """
+        Return price conversion rate for a taker market (to convert it into maker base asset value)
+        """
+        _, _, quote_rate, _, _, base_rate = self.get_perp_to_spot_conversion_rate()
+        avg_premium = Decimal("1")
+        if is_adjusted and self._enable_reg_offset:
+            avg_premium = Decimal(str(self._lin_reg.beta)) if self._lin_reg.samples_filled() > self._min_buffer_sample else (Decimal("1") + self._fixed_beta)
+        return (quote_rate / base_rate) * avg_premium
+
+    def get_average_premium(self):
+        if self._enable_reg_offset and self._lin_reg.samples_filled() > self._min_buffer_sample:
+            return Decimal(str(self._lin_reg.premium))
+        else:
+            return self._fixed_beta
+
+    def get_min_profitability(self):
+        reg_margin = Decimal(str(self._lin_reg.mean + (1.5 * self._lin_reg.std)))
+        return reg_margin if reg_margin > self._min_profitability else self._min_profitability
 
     def tick(self, timestamp: float):
         """
@@ -157,22 +258,38 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                     return
 
                 if len(self.perp_positions) == 1:
-                    adj_perp_amount = self._perp_market_info.market.quantize_order_amount(
-                        self._perp_market_info.trading_pair, self._order_amount)
-                    if abs(self.perp_positions[0].amount) == adj_perp_amount:
-                        self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} "
-                                           f"{self.perp_positions[0].position_side.name} position. The bot resumes "
-                                           f"operation to close out the arbitrage position")
-                        self._strategy_state = StrategyState.Opened
-                        self._ready_to_start = True
-                    else:
-                        self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} "
-                                           f"{self.perp_positions[0].position_side.name} position with unmatched "
-                                           f"position amount. Please manually close out the position before starting "
-                                           f"this strategy.")
-                        return
+                    self._strategy_state = StrategyState.Opened
+                    self._ready_to_start = True
+                    # adj_perp_amount = self._perp_market_info.market.quantize_order_amount(
+                    #     self._perp_market_info.trading_pair, self._order_amount)
+                    # if abs(self.perp_positions[0].amount) == adj_perp_amount:
+                    #     self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} "
+                    #                        f"{self.perp_positions[0].position_side.name} position. The bot resumes "
+                    #                        f"operation to close out the arbitrage position")
+                    #     self._strategy_state = StrategyState.Opened
+                    #     self._ready_to_start = True
+                    # else:
+                    #     self.logger().info(f"There is an existing {self._perp_market_info.trading_pair} "
+                    #                        f"{self.perp_positions[0].position_side.name} position with unmatched "
+                    #                        f"position amount. Please manually close out the position before starting "
+                    #                        f"this strategy.")
+                    #     return
                 else:
                     self._ready_to_start = True
+        else:
+            if self._last_arb_op_reported_ts + (60 * 5) < self.current_timestamp:
+                spot_bid = self._spot_market_info.market.get_price(self._spot_market_info.trading_pair, False)
+                spot_ask = self._spot_market_info.market.get_price(self._spot_market_info.trading_pair, True)
+                perp_bid = self._perp_market_info.market.get_price(self._perp_market_info.trading_pair, False) * self.market_conversion_rate(False)
+                perp_ask = self._perp_market_info.market.get_price(self._perp_market_info.trading_pair, True) * self.market_conversion_rate(False)
+                # m_bid, m_ask, t_bid, t_ask = self.c_get_bid_ask_prices(market_pair, False)
+                sample = {
+                    "ts": self.current_timestamp,
+                    "y": {"bid": spot_bid, "ask": spot_ask},
+                    "x": {"bid": perp_bid, "ask": perp_ask}
+                }
+                self._lin_reg.add_sample(sample)
+
         if self._ready_to_start and (self._main_task is None or self._main_task.done()):
             self._main_task = safe_ensure_future(self.main(timestamp))
 
@@ -183,22 +300,29 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         self.update_strategy_state()
         if self._strategy_state in (StrategyState.Opening, StrategyState.Closing):
             return
-        if self.strategy_state == StrategyState.Closed and self._next_arbitrage_opening_ts > self.current_timestamp:
+        if self.strategy_state == StrategyState.Opened and self._next_arbitrage_opening_ts > self.current_timestamp:
             return
         proposals = await self.create_base_proposals()
+        conversion_rate = self.market_conversion_rate(True)
+
+        close_proposals = []
         if self._strategy_state == StrategyState.Opened:
             perp_is_buy = False if self.perp_positions[0].amount > 0 else True
-            proposals = [p for p in proposals if p.perp_side.is_buy == perp_is_buy and p.profit_pct() >=
-                         self._min_closing_arbitrage_pct]
-        else:
-            proposals = [p for p in proposals if p.profit_pct() >= self._min_opening_arbitrage_pct]
+            close_proposals = [p for p in proposals if p.perp_side.is_buy == perp_is_buy and p.profit_pct(conversion_rate) >=
+                         self.get_min_profitability()]
+        
+        open_proposals = [p for p in proposals if p.profit_pct(conversion_rate) >= self.get_min_profitability()]
+        proposals = close_proposals + open_proposals
+
         if len(proposals) == 0:
             return
         proposal = proposals[0]
         if self._last_arb_op_reported_ts + 60 < self.current_timestamp:
-            pos_txt = "closing" if self._strategy_state == StrategyState.Opened else "opening"
+            is_closing = True if proposals == close_proposals else False
+            pos_txt = "closing" if is_closing else "opening"
+            # pos_txt = "closing" if self._strategy_state == StrategyState.Opened else "opening"
             self.logger().info(f"Arbitrage position {pos_txt} opportunity found.")
-            self.logger().info(f"Profitability ({proposal.profit_pct():.2%}) is now above min_{pos_txt}_arbitrage_pct.")
+            self.logger().info(f"Profitability ({proposal.profit_pct(conversion_rate):.2%}) is now above min_{pos_txt}_arbitrage_pct.")
             self._last_arb_op_reported_ts = self.current_timestamp
         self.apply_slippage_buffers(proposal)
         if self.check_budget_constraint(proposal):
@@ -212,11 +336,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
                 self.perp_positions:
             self._strategy_state = StrategyState.Opened
             self._completed_opening_order_ids.clear()
+            self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
         elif self._strategy_state == StrategyState.Closing and len(self._completed_closing_order_ids) == 2 and \
                 len(self.perp_positions) == 0:
             self._strategy_state = StrategyState.Closed
             self._completed_closing_order_ids.clear()
-            self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
+            # self._next_arbitrage_opening_ts = self.current_timestamp + self._next_arbitrage_opening_delay
 
     async def create_base_proposals(self) -> List[ArbProposal]:
         """
@@ -316,11 +441,11 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         adjusted_candidate_order = budget_checker.adjust_candidate(order_candidate, all_or_none=True)
 
         if adjusted_candidate_order.amount < order_amount:
-            self.logger().info(
-                f"Cannot arbitrage, {proposal_side.market_info.market.display_name}"
-                f" {adjusted_candidate_order.collateral_token} balance ({adjusted_candidate_order.collateral_amount})"
-                f" is below required to place the order amount {order_amount}."
-            )
+            # self.logger().info(
+            #     f"Cannot arbitrage, {proposal_side.market_info.market.display_name}"
+            #     f" {adjusted_candidate_order.collateral_token} balance ({adjusted_candidate_order.collateral_amount})"
+            #     f" is below required to place the order amount {order_amount}."
+            # )
             return False
 
         return True
@@ -337,7 +462,8 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         budget_checker = market_info.market.budget_checker
 
         position_close = False
-        if self.perp_positions and abs(self.perp_positions[0].amount) == order_amount:
+        # if self.perp_positions and abs(self.perp_positions[0].amount) == order_amount:
+        if self.perp_positions:
             perp_side = proposal.perp_side
             cur_perp_pos_is_buy = True if self.perp_positions[0].amount > 0 else False
             if perp_side != cur_perp_pos_is_buy:
@@ -356,11 +482,11 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         adjusted_candidate_order = budget_checker.adjust_candidate(order_candidate, all_or_none=True)
 
         if adjusted_candidate_order.amount < order_amount:
-            self.logger().info(
-                f"Cannot arbitrage, {proposal_side.market_info.market.display_name}"
-                f" {adjusted_candidate_order.collateral_token} balance ({adjusted_candidate_order.collateral_amount})"
-                f" is below required to place the order amount {order_amount}."
-            )
+            # self.logger().info(
+            #     f"Cannot arbitrage, {proposal_side.market_info.market.display_name}"
+            #     f" {adjusted_candidate_order.collateral_token} balance ({adjusted_candidate_order.collateral_amount})"
+            #     f" is below required to place the order amount {order_amount}."
+            # )
             return False
 
         return True
@@ -370,16 +496,17 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         Execute both sides of the arbitrage trades concurrently.
         :param proposal: the arbitrage proposal
         """
+        conversion_rate = self.market_conversion_rate(True)
         if proposal.order_amount == s_decimal_zero:
             return
         spot_side = proposal.spot_side
         spot_order_fn = self.buy_with_specific_market if spot_side.is_buy else self.sell_with_specific_market
-        side = "BUY" if spot_side.is_buy else "SELL"
-        self.log_with_clock(
-            logging.INFO,
-            f"Placing {side} order for {proposal.order_amount} {spot_side.market_info.base_asset} "
-            f"at {spot_side.market_info.market.display_name} at {spot_side.order_price} price"
-        )
+        spot_action = "BUY" if spot_side.is_buy else "SELL"
+        # self.log_with_clock(
+        #     logging.INFO,
+        #     f"Placing {spot_action} order for {proposal.order_amount} {spot_side.market_info.base_asset} "
+        #     f"at {spot_side.market_info.market.display_name} at {spot_side.order_price} price"
+        # )
         spot_order_fn(
             spot_side.market_info,
             proposal.order_amount,
@@ -388,14 +515,16 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         )
         perp_side = proposal.perp_side
         perp_order_fn = self.buy_with_specific_market if perp_side.is_buy else self.sell_with_specific_market
-        side = "BUY" if perp_side.is_buy else "SELL"
-        position_action = PositionAction.CLOSE if self._strategy_state == StrategyState.Opened else PositionAction.OPEN
-        self.log_with_clock(
-            logging.INFO,
-            f"Placing {side} order for {proposal.order_amount} {perp_side.market_info.base_asset} "
-            f"at {perp_side.market_info.market.display_name} at {perp_side.order_price} price to "
-            f"{position_action.name} position."
-        )
+        perp_action = "BUY" if perp_side.is_buy else "SELL"
+        
+        position_action = PositionAction.CLOSE if proposal.profit_pct(conversion_rate) >= self.get_min_profitability() else PositionAction.OPEN
+        # position_action = PositionAction.CLOSE if self._strategy_state == StrategyState.Opened else PositionAction.OPEN
+        # self.log_with_clock(
+        #     logging.INFO,
+        #     f"Placing {perp_action} order for {proposal.order_amount} {perp_side.market_info.base_asset} "
+        #     f"at {perp_side.market_info.market.display_name} at {perp_side.order_price} price to "
+        #     f"{position_action.name} position."
+        # )
         perp_order_fn(
             perp_side.market_info,
             proposal.order_amount,
@@ -403,10 +532,31 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
             perp_side.order_price,
             position_action=position_action
         )
-        if self._strategy_state == StrategyState.Opened:
-            self._strategy_state = StrategyState.Closing
-            self._completed_closing_order_ids.clear()
-        else:
+        # if self._strategy_state == StrategyState.Opened:
+        #     self._strategy_state = StrategyState.Closing
+        #     self._completed_closing_order_ids.clear()
+        # else:
+        #     self._strategy_state = StrategyState.Opening
+        #     self._completed_opening_order_ids.clear()
+
+        self.log_with_clock(
+            logging.INFO,
+            f"[Order] {spot_action}-{proposal.order_amount}={spot_side.market_info.base_asset}-"
+            f"-{spot_side.market_info.market.display_name}-{spot_side.order_price}"
+            f"-{perp_action}-{proposal.order_amount}-{perp_side.market_info.base_asset}"
+            f"-{perp_side.market_info.market.display_name}-{perp_side.order_price}"
+        )
+        sell_price = spot_side.order_price if spot_action == "SELL" else (perp_side.order_price * self.market_conversion_rate(False))
+        buy_price = spot_side.order_price if spot_action == "BUY" else (perp_side.order_price * self.market_conversion_rate(False))
+        profit = (sell_price / buy_price) - 1
+
+        self.log_with_clock(
+            logging.INFO,
+            f"[Arb] {profit:.2%} {spot_action} {spot_side.market_info.market.display_name} "
+            f"{perp_action} {perp_side.market_info.market.display_name}"
+        )
+
+        if self._strategy_state in (StrategyState.Opened, StrategyState.Closed):
             self._strategy_state = StrategyState.Opening
             self._completed_opening_order_ids.clear()
 
@@ -435,7 +585,10 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         """
         columns = ["Exchange", "Market", "Sell Price", "Buy Price", "Mid Price"]
         data = []
-        for market_info in [self._spot_market_info, self._perp_market_info]:
+        spot = self._spot_market_info
+        perp = self._perp_market_info
+
+        for market_info in [spot, perp]:
             market, trading_pair, base_asset, quote_asset = market_info
             buy_price = await market.get_quote_price(trading_pair, True, self._order_amount)
             sell_price = await market.get_quote_price(trading_pair, False, self._order_amount)
@@ -458,17 +611,39 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         else:
             lines.extend(["", "  No active positions."])
 
-        assets_df = self.wallet_balance_data_frame([self._spot_market_info, self._perp_market_info])
-        lines.extend(["", "  Assets:"] +
+        assets_df = self.wallet_balance_data_frame([spot, perp])
+        quote_asset = perp.quote_asset
+        base_asset = perp.base_asset
+        total_base_asset = assets_df.loc[assets_df["Asset"] == base_asset]["Total Balance"].sum()
+        quote_df = assets_df.loc[assets_df["Asset"] != base_asset]
+        total_quote_asset = np.where(quote_df["Asset"] == quote_asset, quote_df["Total Balance"], quote_df["Total Balance"] / float(self.market_conversion_rate(False))).sum()
+        lines.extend(["", f"  Assets: {total_base_asset:.2f}{base_asset} {total_quote_asset:.2f}{quote_asset}"] +
                      ["    " + line for line in str(assets_df).split("\n")])
 
-        proposals = await self.create_base_proposals()
-        lines.extend(["", "  Opportunity:"] + self.short_proposal_msg(proposals))
+        # proposals = await self.create_base_proposals()
+        spot_buy = spot.market.get_price(spot.trading_pair, True)
+        spot_sell = spot.market.get_price(spot.trading_pair, False)
+        perp_buy = perp.market.get_price(perp.trading_pair, True) * self.market_conversion_rate(False)
+        perp_sell = perp.market.get_price(perp.trading_pair, False) * self.market_conversion_rate(False)
+        perp_buy_adj = perp.market.get_price(perp.trading_pair, True) * self.market_conversion_rate(True)
+        perp_sell_adj = perp.market.get_price(perp.trading_pair, False) * self.market_conversion_rate(True)
 
-        warning_lines = self.network_warning([self._spot_market_info])
-        warning_lines.extend(self.network_warning([self._perp_market_info]))
-        warning_lines.extend(self.balance_warning([self._spot_market_info]))
-        warning_lines.extend(self.balance_warning([self._perp_market_info]))
+        op_lines = []
+        op_lines.append(f"{'    '}buy at {spot.market.display_name}"
+                         f", sell at {perp.market.display_name}: "
+                         f"{(perp_sell / spot_buy - 1):.2%} Adj {(perp_sell_adj/spot_buy - 1):.2%}")
+        op_lines.append(f"{'    '}sell at {spot.market.display_name}"
+                         f", buy at {perp.market.display_name}: "
+                         f"{(spot_sell / perp_buy - 1):.2%} Adj {(spot_sell / perp_buy_adj - 1):.2%}")
+
+        lines.extend(["", f"  Opportunity: Prem {self.get_average_premium():.2%}, Std {self._lin_reg.std:.2%}"] + op_lines)
+
+        # current conversion rate, premium, 
+
+        warning_lines = self.network_warning([spot])
+        warning_lines.extend(self.network_warning([perp]))
+        warning_lines.extend(self.balance_warning([spot]))
+        warning_lines.extend(self.balance_warning([perp]))
         if len(warning_lines) > 0:
             lines.extend(["", "*** WARNINGS ***"] + warning_lines)
 
@@ -485,11 +660,12 @@ class SpotPerpetualArbitrageStrategy(StrategyPyBase):
         for proposal in arb_proposal:
             spot_side = "buy" if proposal.spot_side.is_buy else "sell"
             perp_side = "buy" if proposal.perp_side.is_buy else "sell"
-            profit_pct = proposal.profit_pct()
+            profit_pct = proposal.profit_pct(self.market_conversion_rate(False))
+            adj_profit_pct = proposal.profit_pct(self.market_conversion_rate(True))
             lines.append(f"{'    ' if indented else ''}{spot_side} at "
                          f"{proposal.spot_side.market_info.market.display_name}"
                          f", {perp_side} at {proposal.perp_side.market_info.market.display_name}: "
-                         f"{profit_pct:.2%}")
+                         f"{profit_pct:.2%} Adj {adj_profit_pct:.2%}")
         return lines
 
     @property

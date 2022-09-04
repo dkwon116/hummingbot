@@ -102,8 +102,7 @@ class StartCommand:
 
             # Display warning message if the exchange connector has outstanding issues or not working
             elif status != "GREEN":
-                self._notify(f"\nConnector status: {status}. This connector has one or more issues.\n"
-                             "Refer to our Github page for more info: https://github.com/coinalpha/hummingbot")
+                self._notify(f"\nConnector status: {status}. This connector has one or more issues.\n")
 
         await self.start_market_making(self.strategy_name, restore)
 

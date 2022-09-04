@@ -131,4 +131,10 @@ hedge_config_map = {
                   type_str="decimal",
                   validator=lambda v: validate_decimal(v, 0, inclusive=False),
                   prompt_on_new=True),
+    "spot_offset_amount":
+        ConfigVar(key="spot_offset_amount",
+                  prompt="Base amount to offset spot (Total 5BTC, move 1BTC to Binance to sell, 4BTC in Upbit, set to 4BTC) >>> ",
+                  default=Decimal("0"),
+                  type_str="decimal",
+                  validator=lambda v: validate_decimal(v, 0, inclusive=True)),
 }

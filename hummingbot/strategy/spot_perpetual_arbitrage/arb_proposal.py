@@ -3,6 +3,7 @@ from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 
 s_decimal_nan = Decimal("NaN")
 s_decimal_0 = Decimal("0")
+s_decimal_1 = Decimal("1")
 
 
 class ArbProposalSide:
@@ -50,12 +51,13 @@ class ArbProposal:
         self.perp_side: ArbProposalSide = perp_side
         self.order_amount: Decimal = order_amount
 
-    def profit_pct(self) -> Decimal:
+    def profit_pct(self, conversion_rate) -> Decimal:
         """
         Calculates and returns arbitrage profit (in percentage value).
         """
-        buy_price = self.spot_side.order_price if self.spot_side.is_buy else self.perp_side.order_price
-        sell_price = self.spot_side.order_price if not self.spot_side.is_buy else self.perp_side.order_price
+        perp_order_price = self.perp_side.order_price * conversion_rate
+        buy_price = self.spot_side.order_price if self.spot_side.is_buy else perp_order_price
+        sell_price = self.spot_side.order_price if not self.spot_side.is_buy else perp_order_price
         return (sell_price - buy_price) / buy_price
 
     def __repr__(self):

@@ -18,6 +18,12 @@ def start(self):
     use_oracle_conversion_rate = arbitrage_config_map.get("use_oracle_conversion_rate").value
     secondary_to_primary_base_conversion_rate = arbitrage_config_map["secondary_to_primary_base_conversion_rate"].value
     secondary_to_primary_quote_conversion_rate = arbitrage_config_map["secondary_to_primary_quote_conversion_rate"].value
+    
+    bb_buffer_size = arbitrage_config_map["bb_buffer_size"].value
+    enable_bb_offset = arbitrage_config_map["enable_bb_offset"].value
+    ema_buffer_size = arbitrage_config_map["ema_buffer_size"].value
+    slippage_buffer = arbitrage_config_map["slippage_buffer"].value / Decimal("100")
+    balance_buffer = arbitrage_config_map["balance_buffer"].value / Decimal("100")
 
     try:
         primary_trading_pair: str = raw_primary_trading_pair
@@ -44,4 +50,9 @@ def start(self):
                               use_oracle_conversion_rate=use_oracle_conversion_rate,
                               secondary_to_primary_base_conversion_rate=secondary_to_primary_base_conversion_rate,
                               secondary_to_primary_quote_conversion_rate=secondary_to_primary_quote_conversion_rate,
-                              hb_app_notification=True)
+                              hb_app_notification=True,
+                              bb_buffer_size=bb_buffer_size,
+                              enable_bb_offset=enable_bb_offset,
+                              ema_buffer_size=ema_buffer_size,
+                              slippage_buffer=slippage_buffer,
+                              balance_buffer=balance_buffer)

@@ -32,6 +32,25 @@ def start(self):
     taker_to_maker_base_conversion_rate = xemm_map.get("taker_to_maker_base_conversion_rate").value
     taker_to_maker_quote_conversion_rate = xemm_map.get("taker_to_maker_quote_conversion_rate").value
     slippage_buffer = xemm_map.get("slippage_buffer").value / Decimal("100")
+    
+    enable_reg_offset = xemm_map["enable_reg_offset"].value
+    fixed_beta = xemm_map.get("fixed_beta").value / Decimal("100")
+
+    ema_length = xemm_map.get("ema_length").value
+    fast_ema_length = xemm_map.get("fast_ema_length").value
+    initial_ema = xemm_map.get("initial_ema").value
+    initial_fast_ema = xemm_map.get("initial_fast_ema").value
+    std_length = xemm_map.get("std_length").value
+    sampling_interval = xemm_map.get("sampling_interval").value
+
+    disparity_sensitivity = xemm_map.get("disparity_sensitivity").value
+    disparity_factor = xemm_map.get("disparity_factor").value
+    std_factor = xemm_map.get("std_factor").value
+    trend_factor = xemm_map.get("trend_factor").value
+    enable_best_price = xemm_map.get("enable_best_price").value
+    order_levels = xemm_map.get("order_levels").value
+    order_level_amount = xemm_map.get("order_level_amount").value
+    order_level_spread = xemm_map.get("order_level_spread").value / Decimal('100')
 
     # check if top depth tolerance is a list or if trade size override exists
     if isinstance(top_depth_tolerance, list) or "trade_size_override" in xemm_map:
@@ -89,4 +108,22 @@ def start(self):
         taker_to_maker_quote_conversion_rate=taker_to_maker_quote_conversion_rate,
         slippage_buffer=slippage_buffer,
         hb_app_notification=True,
+        enable_reg_offset=enable_reg_offset,
+        fixed_beta=fixed_beta,
+
+        ema_length=ema_length,
+        fast_ema_length=fast_ema_length,
+        initial_ema=initial_ema,
+        initial_fast_ema=initial_fast_ema,
+        std_length=std_length,
+        sampling_interval=sampling_interval,
+
+        disparity_sensitivity=disparity_sensitivity,
+        disparity_factor=disparity_factor,
+        std_factor=std_factor,
+        trend_factor=trend_factor,
+        enable_best_price=enable_best_price,
+        order_levels=order_levels,
+        order_level_spread=order_level_spread,
+        order_level_amount=order_level_amount,
     )

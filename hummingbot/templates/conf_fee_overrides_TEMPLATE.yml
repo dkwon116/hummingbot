@@ -94,3 +94,12 @@ bybit_perpetual_taker_fee:
 
 bybit_perpetual_testnet_maker_fee:
 bybit_perpetual_testnet_taker_fee:
+
+upbit_maker_fee:
+upbit_taker_fee:
+
+bithumb_maker_fee:
+bithumb_taker_fee:
+
+gopax_maker_fee:
+gopax_taker_fee:

@@ -96,7 +96,7 @@ cdef class ExchangeBase(ConnectorBase):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             object top_price
         try:
-            top_price = Decimal(order_book.c_get_price(is_buy))
+            top_price = Decimal(str(order_book.c_get_price(is_buy)))
         except EnvironmentError as e:
             self.logger().warning(f"{'Ask' if is_buy else 'Bid'} orderbook for {trading_pair} is empty.")
             return s_decimal_NaN
@@ -108,7 +108,7 @@ cdef class ExchangeBase(ConnectorBase):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_vwap_for_volume(is_buy, float(volume))
             object query_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.query_volume))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(s_decimal_NaN,
                                           query_volume,
@@ -120,7 +120,7 @@ cdef class ExchangeBase(ConnectorBase):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_price_for_quote_volume(is_buy, float(volume))
             object query_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.query_volume))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(s_decimal_NaN,
                                           query_volume,
@@ -132,7 +132,7 @@ cdef class ExchangeBase(ConnectorBase):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_price_for_volume(is_buy, float(volume))
             object query_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.query_volume))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(s_decimal_NaN,
                                           query_volume,
@@ -156,7 +156,7 @@ cdef class ExchangeBase(ConnectorBase):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_volume_for_price(is_buy, float(price))
             object query_price = self.c_quantize_order_price(trading_pair, Decimal(result.query_price))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(query_price,
                                           s_decimal_NaN,
@@ -168,7 +168,7 @@ cdef class ExchangeBase(ConnectorBase):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_volume_for_price(is_buy, float(price))
             object query_price = self.c_quantize_order_price(trading_pair, Decimal(result.query_price))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(query_price,
                                           s_decimal_NaN,
@@ -284,7 +284,7 @@ cdef class ExchangeBase(ConnectorBase):
         elif price_type is PriceType.MidPrice:
             return (self.c_get_price(trading_pair, True) + self.c_get_price(trading_pair, False)) / Decimal("2")
         elif price_type is PriceType.LastTrade:
-            return Decimal(self.c_get_order_book(trading_pair).last_trade_price)
+            return Decimal(str(self.c_get_order_book(trading_pair).last_trade_price))
 
     async def get_quote_price(self, trading_pair: str, is_buy: bool, amount: Decimal) -> Decimal:
         """

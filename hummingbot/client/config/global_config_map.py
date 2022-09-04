@@ -286,6 +286,19 @@ main_config_map = {
                   required_if=lambda: False,
                   default="HARD-USDT,HARD-BTC,XEM-ETH,XEM-BTC,ALGO-USDT,ALGO-BTC,COTI-BNB,COTI-USDT,COTI-BTC,MFT-BNB,"
                           "MFT-ETH,MFT-USDT,RLC-ETH,RLC-BTC,RLC-USDT"),
+    "binance_order_update_slot":
+        ConfigVar(key="binance_order_update_slot",
+                  prompt="At what slot in 30 sec increments to update orders for rate limit issue (1 ~ 20) >>> ",
+                  type_str="decimal",
+                  validator=lambda v: validate_decimal(v, 1, 20, inclusive=True),
+                  required_if=lambda: False,
+                  default=Decimal("1")),
+    "binance_broker_id":
+        ConfigVar(key="binance_broker_id",
+                  prompt="Please enter your binance broker ID >>> ",
+                  type_str="str",
+                  required_if=lambda: False,
+                  default="DK"),
     "command_shortcuts":
         ConfigVar(key="command_shortcuts",
                   prompt=None,

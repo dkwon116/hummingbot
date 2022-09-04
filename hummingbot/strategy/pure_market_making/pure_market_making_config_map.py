@@ -212,8 +212,8 @@ pure_market_making_config_map = {
                          "orders? (Enter 1 to indicate 1%) >>> ",
                   required_if=lambda: pure_market_making_config_map.get("order_levels").value > 1,
                   type_str="decimal",
-                  validator=lambda v: validate_decimal(v, 0, 100, inclusive=False),
-                  default=Decimal("1")),
+                  validator=lambda v: validate_decimal(v, 0, 100, inclusive=True),
+                  default=Decimal("0")),
     "inventory_skew_enabled":
         ConfigVar(key="inventory_skew_enabled",
                   prompt="Would you like to enable inventory skew? (Yes/No) >>> ",
@@ -356,4 +356,16 @@ pure_market_making_config_map = {
                   type_str="bool",
                   default=True,
                   validator=validate_bool),
+    "liquidity_providing":
+        ConfigVar(key="liquidity_providing",
+                  prompt="Is this for providing liquidity? Use best bid ask as reference price >>> ",
+                  type_str="bool",
+                  default=False,
+                  validator=validate_bool),
+    "budget_constraint":
+        ConfigVar(key="budget_constraint",
+                  prompt="Is this for providing liquidity? Use best bid ask as reference price >>> ",
+                  type_str="decimal",
+                  validator=lambda v: validate_decimal(v, 0, 10000000000),
+                  default=Decimal("0")),
 }

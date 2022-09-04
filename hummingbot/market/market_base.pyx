@@ -311,7 +311,7 @@ cdef class MarketBase(NetworkIterator):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             object top_price
         try:
-            top_price = Decimal(order_book.c_get_price(is_buy))
+            top_price = Decimal(str(order_book.c_get_price(is_buy)))
         except EnvironmentError as e:
             self.logger().warning(f"{'Ask' if is_buy else 'Buy'} orderbook for {trading_pair} is empty.")
             return s_decimal_NaN
@@ -323,7 +323,7 @@ cdef class MarketBase(NetworkIterator):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_vwap_for_volume(is_buy, float(volume))
             object query_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.query_volume))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(s_decimal_NaN,
                                           query_volume,
@@ -335,7 +335,7 @@ cdef class MarketBase(NetworkIterator):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_price_for_volume(is_buy, float(volume))
             object query_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.query_volume))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(s_decimal_NaN,
                                           query_volume,
@@ -358,7 +358,7 @@ cdef class MarketBase(NetworkIterator):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_volume_for_price(is_buy, float(price))
             object query_price = self.c_quantize_order_price(trading_pair, Decimal(result.query_price))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(query_price,
                                           s_decimal_NaN,
@@ -370,7 +370,7 @@ cdef class MarketBase(NetworkIterator):
             OrderBook order_book = self.c_get_order_book(trading_pair)
             OrderBookQueryResult result = order_book.c_get_volume_for_price(is_buy, float(price))
             object query_price = self.c_quantize_order_price(trading_pair, Decimal(result.query_price))
-            object result_price = self.c_quantize_order_price(trading_pair, Decimal(result.result_price))
+            object result_price = self.c_quantize_order_price(trading_pair, Decimal(str(result.result_price)))
             object result_volume = self.c_quantize_order_amount(trading_pair, Decimal(result.result_volume))
         return ClientOrderBookQueryResult(query_price,
                                           s_decimal_NaN,

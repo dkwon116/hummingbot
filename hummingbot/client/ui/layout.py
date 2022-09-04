@@ -85,7 +85,7 @@ with open(realpath(join(dirname(__file__), '../../VERSION'))) as version_file:
 
 def create_input_field(lexer=None, completer: Completer = None):
     return TextArea(
-        height=10,
+        height=4,
         prompt='>>> ',
         style='class:input-field',
         multiline=False,

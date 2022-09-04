@@ -1,6 +1,7 @@
 # distutils: language=c++
 import logging
 from decimal import Decimal
+import datetime
 import pandas as pd
 from typing import (
     List,
@@ -22,6 +23,9 @@ from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.arbitrage.arbitrage_market_pair import ArbitrageMarketPair
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.client.performance import PerformanceMetrics
+
+from ..__utils__.trailing_indicators.bollinger_band import BollingerBandIndicator
+from ..__utils__.trailing_indicators.exponential_moving_average import ExponentialMovingAverageIndicator
 
 NaN = float("nan")
 s_decimal_0 = Decimal(0)
@@ -47,14 +51,19 @@ cdef class ArbitrageStrategy(StrategyBase):
     def init_params(self,
                     market_pairs: List[ArbitrageMarketPair],
                     min_profitability: Decimal,
-                    logging_options: int = OPTION_LOG_ORDER_COMPLETED,
+                    logging_options: int = OPTION_LOG_FULL_PROFITABILITY_STEP,
                     status_report_interval: float = 60.0,
                     next_trade_delay_interval: float = 15.0,
                     failed_order_tolerance: int = 1,
                     use_oracle_conversion_rate: bool = False,
                     secondary_to_primary_base_conversion_rate: Decimal = Decimal("1"),
                     secondary_to_primary_quote_conversion_rate: Decimal = Decimal("1"),
-                    hb_app_notification: bool = False):
+                    hb_app_notification: bool = False,
+                    bb_buffer_size: int = 12,
+                    enable_bb_offset: bool = False,
+                    ema_buffer_size: int = 100,
+                    slippage_buffer: Decimal = Decimal("0"),
+                    balance_buffer: Decimal = Decimal("0")):
         """
         :param market_pairs: list of arbitrage market pairs
         :param min_profitability: minimum profitability limit, for calculating arbitrage order sizes
@@ -89,6 +98,17 @@ cdef class ArbitrageStrategy(StrategyBase):
 
         self._hb_app_notification = hb_app_notification
 
+        self._profit_factor = 0
+        self._slippage_buffer = slippage_buffer
+        self._balance_buffer = balance_buffer
+        self._bb_buffer_size = bb_buffer_size
+        self._enable_bb_offset = enable_bb_offset
+        self._ema_buffer_size = ema_buffer_size
+        self._bb_ub = BollingerBandIndicator(sampling_length=bb_buffer_size, processing_length=1)
+        self._bb_bu = BollingerBandIndicator(sampling_length=bb_buffer_size, processing_length=1)
+        self._ema_ub = ExponentialMovingAverageIndicator(sampling_length=ema_buffer_size, processing_length=1)
+        self._ema_bu = ExponentialMovingAverageIndicator(sampling_length=ema_buffer_size, processing_length=1)
+
         cdef:
             set all_markets = {
                 market
@@ -99,12 +119,20 @@ cdef class ArbitrageStrategy(StrategyBase):
         self.c_add_markets(list(all_markets))
 
     @property
+    def market_pairs(self) -> Decimal:
+        return self._market_pairs
+
+    @property
     def min_profitability(self) -> Decimal:
         return self._min_profitability
 
     @property
     def use_oracle_conversion_rate(self) -> Decimal:
         return self._use_oracle_conversion_rate
+    
+    @property
+    def _current_profitability(self) -> Decimal:
+        return self._current_profitability
 
     @property
     def tracked_limit_orders(self) -> List[Tuple[ExchangeBase, LimitOrder]]:
@@ -121,6 +149,70 @@ cdef class ArbitrageStrategy(StrategyBase):
     @property
     def tracked_market_orders_data_frame(self) -> List[pd.DataFrame]:
         return self._sb_order_tracker.tracked_market_orders_data_frame
+    
+    @property
+    def profit_factor(self) -> Decimal:
+        return self._profit_factor
+    
+    @profit_factor.setter
+    def profit_factor(self, value):
+        self._profit_factor = value
+
+    @property
+    def slippage_buffer(self) -> Decimal:
+        return self._slippage_buffer
+
+    @property
+    def balance_buffer(self) -> Decimal:
+        return self._balance_buffer
+    
+    @property
+    def bb_buffer_size(self) -> Decimal:
+        return self._bb_buffer_size
+
+    @bb_buffer_size.setter
+    def bb_buffer_size(self, value):
+        self._bb_buffer_size = value
+
+    @property
+    def enable_bb_offset(self) -> Decimal:
+        return self._enable_bb_offset
+
+    @property
+    def bb_ub(self):
+        return self._bb_ub
+
+    @bb_ub.setter
+    def bb_ub(self, indicator: BollingerBandIndicator):
+        self._bb_ub = indicator
+    
+    @property
+    def bb_bu(self):
+        return self._bb_bu
+
+    @bb_bu.setter
+    def bb_bu(self, indicator: BollingerBandIndicator):
+        self._bb_bu = indicator
+    
+    @property
+    def ema_buffer_size(self) -> Decimal:
+        return self._ema_buffer_size
+
+    @property
+    def ema_ub(self):
+        return self._ema_ub
+
+    @ema_ub.setter
+    def ema_ub(self, indicator: ExponentialMovingAverageIndicator):
+        self._ema_ub = indicator
+    
+    @property
+    def ema_bu(self):
+        return self._ema_bu
+
+    @ema_bu.setter
+    def ema_bu(self, indicator: ExponentialMovingAverageIndicator):
+        self._ema_bu = indicator
 
     def get_second_to_first_conversion_rate(self) -> Tuple[str, Decimal, str, Decimal]:
         """
@@ -152,9 +244,9 @@ cdef class ArbitrageStrategy(StrategyBase):
         quote_pair, quote_rate_source, quote_rate, base_pair, base_rate_source, base_rate = \
             self.get_second_to_first_conversion_rate()
         if quote_pair.split("-")[0] != quote_pair.split("-")[1]:
-            self.logger().info(f"{quote_pair} ({quote_rate_source}) conversion rate: {PerformanceMetrics.smart_round(quote_rate)}")
+            self.logger().info(f"{quote_pair} ({quote_rate_source}) conversion rate:{PerformanceMetrics.smart_round(quote_rate)},UB_Profit:{self._current_profitability[0]:.4%},BU_Profit:{self._current_profitability[1]:.4%}")
         if base_pair.split("-")[0] != base_pair.split("-")[1]:
-            self.logger().info(f"{base_pair} ({base_rate_source}) conversion rate: {PerformanceMetrics.smart_round(base_rate)}")
+            self.logger().info(f"{base_pair} ({base_rate_source}) conversion rate:{PerformanceMetrics.smart_round(base_rate)},UB_Profit:{self._current_profitability[0]:.4%},BU_Profit:{self._current_profitability[1]:.4%}")
 
     def oracle_status_df(self):
         columns = ["Source", "Pair", "Rate"]
@@ -191,12 +283,59 @@ cdef class ArbitrageStrategy(StrategyBase):
             lines.extend(["", "  Assets:"] +
                          ["    " + line for line in str(assets_df).split("\n")])
 
+            ema_ub_current = round(self._ema_ub.current_value * 100, 3)
+            ema_ub_trend = "Uptrend" if self._ema_ub.is_uptrend else "Downtrend"
+            ema_ub_slope = self._ema_ub.trend_slope
+            ema_bu_current = round(self._ema_bu.current_value * 100, 3)
+            ema_bu_trend = "Uptrend" if self._ema_bu.is_uptrend else "Downtrend"
+            ema_bu_slope = self._ema_bu.trend_slope
+
+            bb_ub = self._bb_ub
+            bb_bu = self._bb_bu
+
+            lines.extend(
+                ["", "  Trailing Indicators:"] +
+                [f"    BB[U/B]({bb_ub.sampling_length_filled()}/{self._bb_buffer_size}): Base {bb_ub.current_value:.3%}% Upper {bb_ub.upper(1):.3%}% Lower {bb_ub.lower(1):.3%}% Profitability {bb_ub.get_stdev():.3%}%"] +
+                [f"    BB[B/U]({bb_bu.sampling_length_filled()}/{self._bb_buffer_size}): Base {bb_bu.current_value:.3%}% Upper {bb_bu.upper(1):.3%}% Lower {bb_bu.lower(1):.3%}% Profitability {bb_bu.get_stdev():.3%}%"] +
+                [f"    EMA[U/B]({self._ema_ub.sampling_length_filled()}/{self._ema_buffer_size}): Current {ema_ub_current}% is {ema_ub_trend} with Slope {ema_ub_slope}"] +
+                [f"    EMA[U/B]({self._ema_bu.sampling_length_filled()}/{self._ema_buffer_size}): Current {ema_bu_current}% is {ema_bu_trend} with Slope {ema_bu_slope}"])
+
             lines.extend(
                 ["", "  Profitability(without fees):"] +
-                [f"    take bid on {market_pair.first.market.name}, "
-                 f"take ask on {market_pair.second.market.name}: {round(self._current_profitability[0] * 100, 4)} %"] +
-                [f"    take ask on {market_pair.first.market.name}, "
-                 f"take bid on {market_pair.second.market.name}: {round(self._current_profitability[1] * 100, 4)} %"])
+                [f"    Profit Offset {self._profit_factor:.2%}%, Slippage buffer {self._slippage_buffer:.2%}%, Balance buffer {self._balance_buffer:.2%}%"] +
+                [f"    take bid (sell) on {market_pair.first.market.name}, "
+                 f"take ask (buy) on {market_pair.second.market.name}: {self._current_profitability[0]:.4%} %"] +
+                [f"    take ask (buy) on {market_pair.first.market.name}, "
+                 f"take bid (sell) on {market_pair.second.market.name}: {self._current_profitability[1]:.4%} %"])
+
+
+            bb_base = Decimal((bb_ub.current_value - bb_bu.current_value) / 2)
+            avg_std = Decimal((bb_ub.get_stdev() + bb_bu.get_stdev()) / 2)
+            upper = bb_base + avg_std
+            lower = bb_base - avg_std
+
+            adj_ub_profit = self._current_profitability[0] - bb_base
+            adj_bu_profit = self._current_profitability[1] + bb_base
+
+            lines.extend(
+                ["", " Adjusted Trailing Indicators:"] +
+                [f"    BB[U/B]({bb_ub.sampling_length_filled()}/{self._bb_buffer_size}): Base {bb_base:.3%}% Upper {upper:.3%}% Lower {lower:.3%}% Profitability {avg_std:.3%}%"] +
+                [f"    BB[B/U]({bb_bu.sampling_length_filled()}/{self._bb_buffer_size}): Base {-bb_base:.3%}% Upper {-lower:.3%}% Lower {-upper:.3%}% Profitability {avg_std:.3%}%"] +
+                [f"    Profit: U/B {self._current_profitability[0]:.4%} B/U {self._current_profitability[1]:.4%}"] +
+                [f"    Adj Profit: U/B {adj_ub_profit:.4%} [{adj_ub_profit > avg_std}] B/U {adj_bu_profit:.4%} [{adj_bu_profit > avg_std}]"])
+            
+            if avg_std > 0:
+                ub_factor = round((adj_ub_profit / avg_std), 4)
+                bu_factor = round((adj_bu_profit / avg_std), 4)
+
+                if (adj_ub_profit > avg_std) and self._profit_factor != ub_factor:
+                    self._profit_factor = ub_factor
+                    self.logger().info(f"Side:UB,Profit:{self._current_profitability[0]:.4%},Adj_Profit:{adj_ub_profit:.4%},Profit_Factor:{self._profit_factor:.2f},Offset:{bb_base:.3%},Std:{avg_std:.3%},Trend:{ema_ub_trend},Slope:{ema_ub_slope:.8f}")
+                    
+                if adj_bu_profit > avg_std and self._profit_factor != bu_factor:
+                    self._profit_factor = bu_factor
+                    self.logger().info(f"Side:BU,Profit:{self._current_profitability[1]:.4%},Adj_Profit:{adj_bu_profit:.4%},Profit_Factor:{self._profit_factor:.2f},Offset:{bb_base:.3%},Std:{avg_std:.3%},Trend:{ema_bu_trend},Slope:{ema_bu_slope:.8f}")
+                    
 
             # See if there're any pending limit orders.
             tracked_limit_orders = self.tracked_limit_orders
@@ -353,6 +492,13 @@ cdef class ArbitrageStrategy(StrategyBase):
             double time_left
             dict tracked_taker_orders = {**self._sb_order_tracker.c_get_limit_orders(), ** self._sb_order_tracker.c_get_market_orders()}
 
+        quote_pair, quote_rate_source, quote_rate, base_pair, base_rate_source, base_rate = \
+            self.get_second_to_first_conversion_rate()
+        
+        if quote_rate == 0:
+            self.log_with_clock(logging.INFO, f"Conversion rate is not valid. Waiting for valid rate...")
+            return False
+
         for market_trading_pair_tuple in market_trading_pair_tuples:
             # Do not continue if there are pending limit order
             if len(tracked_taker_orders.get(market_trading_pair_tuple, {})) > 0:
@@ -390,8 +536,16 @@ cdef class ArbitrageStrategy(StrategyBase):
         if not self.c_ready_for_new_orders([market_pair.first, market_pair.second]):
             return
 
+        # first check if it is profitable to proceed (without fees is profitability greater than min_prof)
         self._current_profitability = \
             self.c_calculate_arbitrage_top_order_profitability(market_pair)
+
+        ts = datetime.datetime.now()
+        if self._last_conv_rates_logged + (60. * 5) < self._current_timestamp:
+            self._bb_ub.add_sample(self._current_profitability[0])
+            self._bb_bu.add_sample(self._current_profitability[1])
+            self._ema_ub.add_sample(self._current_profitability[0])
+            self._ema_bu.add_sample(self._current_profitability[1])
 
         if (self._current_profitability[1] < self._min_profitability and
                 self._current_profitability[0] < self._min_profitability):
@@ -419,6 +573,8 @@ cdef class ArbitrageStrategy(StrategyBase):
             ExchangeBase buy_market = buy_market_trading_pair_tuple.market
             ExchangeBase sell_market = sell_market_trading_pair_tuple.market
 
+        self.logger().debug(f"Processing market - buy from {buy_market_trading_pair_tuple} sell to {sell_market_trading_pair_tuple}")
+
         best_amount, best_profitability, sell_price, buy_price = self.c_find_best_profitable_amount(
             buy_market_trading_pair_tuple, sell_market_trading_pair_tuple
         )
@@ -434,16 +590,22 @@ cdef class ArbitrageStrategy(StrategyBase):
                                     f"and sell of {sell_market_trading_pair_tuple.trading_pair} "
                                     f"at {sell_market_trading_pair_tuple.market.name} "
                                     f"with amount {quantized_order_amount}, "
-                                    f"and profitability {best_profitability}")
+                                    f"and profitability {round(((best_profitability-1) * 100),4)}%")
             # get OrderTypes
             buy_order_type = buy_market_trading_pair_tuple.market.get_taker_order_type()
             sell_order_type = sell_market_trading_pair_tuple.market.get_taker_order_type()
 
+            buffered_buy_price = Decimal(buy_price * (1 + self._slippage_buffer))
+            buffered_sell_price = Decimal(sell_price * (1 - self._slippage_buffer))
+
+            quantized_buy_price = buy_market.c_quantize_order_price(buy_market_trading_pair_tuple.trading_pair, buffered_buy_price)
+            quantized_sell_price = sell_market.c_quantize_order_price(sell_market_trading_pair_tuple.trading_pair, buffered_sell_price)
+
             # Set limit order expiration_seconds to _next_trade_delay for connectors that require order expiration for limit orders
             self.c_buy_with_specific_market(buy_market_trading_pair_tuple, quantized_order_amount,
-                                            order_type=buy_order_type, price=buy_price, expiration_seconds=self._next_trade_delay)
+                                            order_type=buy_order_type, price=quantized_buy_price, expiration_seconds=self._next_trade_delay)
             self.c_sell_with_specific_market(sell_market_trading_pair_tuple, quantized_order_amount,
-                                             order_type=sell_order_type, price=sell_price, expiration_seconds=self._next_trade_delay)
+                                             order_type=sell_order_type, price=quantized_sell_price, expiration_seconds=self._next_trade_delay)
             self.logger().info(self.format_status())
 
     @staticmethod
@@ -464,6 +626,7 @@ cdef class ArbitrageStrategy(StrategyBase):
             return Decimal("1")
         elif market_info == self._market_pairs[0].second:
             _, _, quote_rate, _, _, base_rate = self.get_second_to_first_conversion_rate()
+            # add profit offset to conversion rate
             return quote_rate / base_rate
             # if not self._use_oracle_conversion_rate:
             #     return self._secondary_to_primary_quote_conversion_rate / self._secondary_to_primary_base_conversion_rate
@@ -514,6 +677,7 @@ cdef class ArbitrageStrategy(StrategyBase):
             OrderBook buy_order_book = buy_market_trading_pair_tuple.order_book
             OrderBook sell_order_book = sell_market_trading_pair_tuple.order_book
 
+        self.logger().debug(f"Find Amount - buy {buy_market_trading_pair_tuple} and sell {sell_market_trading_pair_tuple}")
         buy_market_conversion_rate = self.market_conversion_rate(buy_market_trading_pair_tuple)
         sell_market_conversion_rate = self.market_conversion_rate(sell_market_trading_pair_tuple)
         profitable_orders = c_find_profitable_arbitrage_orders(self._min_profitability,
@@ -550,6 +714,7 @@ cdef class ArbitrageStrategy(StrategyBase):
             total_sell_flat_fees = self.c_sum_flat_fees(sell_market_trading_pair_tuple.quote_asset, sell_fee.flat_fees)
 
             # accumulated profitability with fees
+            # total value of bid and ask in the market
             total_bid_value_adjusted += bid_price_adjusted * amount
             total_ask_value_adjusted += ask_price_adjusted * amount
             net_sell_proceeds = total_bid_value_adjusted * (1 - sell_fee.percent) - total_sell_flat_fees
@@ -563,7 +728,7 @@ cdef class ArbitrageStrategy(StrategyBase):
                 best_profitable_order_profitability = profitability
 
             if self._logging_options & self.OPTION_LOG_PROFITABILITY_STEP:
-                self.log_with_clock(logging.DEBUG, f"Total profitability with fees: {profitability}, "
+                self.log_with_clock(logging.info, f"Total profitability with fees: {profitability}, "
                                                    f"Current step profitability: {bid_price/ask_price},"
                                                    f"bid, ask price, amount: {bid_price, ask_price, amount}")
             buy_market_quote_balance = buy_market.c_get_available_balance(buy_market_trading_pair_tuple.quote_asset)
@@ -575,7 +740,7 @@ cdef class ArbitrageStrategy(StrategyBase):
                 if profitability < (1 + self._min_profitability):
                     break
                 if self._logging_options & self.OPTION_LOG_INSUFFICIENT_ASSET:
-                    self.log_with_clock(logging.DEBUG,
+                    self.log_with_clock(logging.info,
                                         f"Not enough asset to complete this step. "
                                         f"Quote asset needed: {total_ask_value + ask_price * amount}. "
                                         f"Quote asset available balance: {buy_market_quote_balance}. "
@@ -596,7 +761,7 @@ cdef class ArbitrageStrategy(StrategyBase):
 
         if self._logging_options & self.OPTION_LOG_FULL_PROFITABILITY_STEP:
             self.log_with_clock(
-                logging.DEBUG,
+                logging.info,
                 "\n" + pd.DataFrame(
                     data=[
                         [b_price_adjusted/a_price_adjusted,
@@ -654,6 +819,7 @@ cdef list c_find_profitable_arbitrage_orders(object min_profitability,
 
     try:
         while True:
+            # Go through orderbook and try to fill the order and check lefover amount
             if bid_leftover_amount == 0 and ask_leftover_amount == 0:
                 # both current ask and bid orders are filled, advance to the next bid and ask order
                 current_bid = next(bid_it)
@@ -683,6 +849,7 @@ cdef list c_find_profitable_arbitrage_orders(object min_profitability,
             current_ask_price_adjusted = current_ask.price * buy_market_conversion_rate
             # arbitrage not possible
             if current_bid_price_adjusted < current_ask_price_adjusted:
+                ArbitrageStrategy.logger().debug(f"Find Profitable Orders - adj bid {current_bid_price_adjusted} lower than adj ask {current_ask_price_adjusted}")
                 break
             # allow negative profitability for debugging
             if min_profitability<0 and current_bid_price_adjusted/current_ask_price_adjusted < (1 + min_profitability):

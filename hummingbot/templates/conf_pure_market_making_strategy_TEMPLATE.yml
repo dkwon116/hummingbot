@@ -130,3 +130,6 @@ should_wait_order_cancel_confirmation: True
 
 # For more detailed information, see:
 # https://docs.hummingbot.io/strategies/pure-market-making/#configuration-parameters
+
+liquidity_providing: null
+budget_constraint: null

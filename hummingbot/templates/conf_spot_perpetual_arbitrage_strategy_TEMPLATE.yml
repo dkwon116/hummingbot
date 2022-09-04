@@ -37,3 +37,22 @@ perpetual_market_slippage_buffer: null
 
 # cool off period between arbitrage cycles
 next_arbitrage_opening_delay: null
+
+# Whether to use rate oracle on unmatched trading pairs
+# Set this to either True or False
+use_oracle_conversion_rate: null
+
+# The conversion rate for taker base asset value to maker base asset value.
+# e.g. if maker base asset is USD, taker is DAI and 1 USD is worth 1.25 DAI, "
+# the conversion rate is 0.8 (1 / 1.25)
+perp_to_spot_base_conversion_rate: null
+
+# The conversion rate for taker quote asset value to maker quote asset value.
+# e.g. if maker quote asset is USD, taker is DAI and 1 USD is worth 1.25 DAI, "
+# the conversion rate is 0.8 (1 / 1.25)
+perp_to_spot_quote_conversion_rate: null
+
+reg_buffer_size: null
+enable_reg_offset: null
+fixed_beta: null
+min_buffer_sample: null

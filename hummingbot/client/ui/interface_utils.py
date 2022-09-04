@@ -80,4 +80,4 @@ async def start_trade_monitor(trade_monitor):
                     trade_monitor.log(f"Trades: {len(trades)}, Total P&L: {total_pnls}, Return %: {avg_return:.2%}")
                     return_pcts.clear()
                     pnls.clear()
-        await _sleep(2)  # sleeping for longer to manage resources
+        await _sleep(300)  # sleeping for longer to manage resources

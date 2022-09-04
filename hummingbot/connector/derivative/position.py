@@ -10,13 +10,15 @@ class Position:
                  unrealized_pnl: Decimal,
                  entry_price: Decimal,
                  amount: Decimal,
-                 leverage: Decimal):
+                 leverage: Decimal,
+                 liquidation_price: Decimal):
         self._trading_pair = trading_pair
         self._position_side = position_side
         self._unrealized_pnl = unrealized_pnl
         self._entry_price = entry_price
         self._amount = amount
         self._leverage = leverage
+        self._liquidation_price = liquidation_price
 
     @property
     def trading_pair(self) -> str:
@@ -42,12 +44,18 @@ class Position:
     def leverage(self) -> Decimal:
         return self._leverage
 
+    @property
+    def liquidation_price(self) -> Decimal:
+        return self._liquidation_price
+
     def update_position(self,
                         position_side: str = None,
                         unrealized_pnl: Decimal = None,
                         entry_price: Decimal = None,
-                        amount: Decimal = None):
+                        amount: Decimal = None,
+                        liquidation_price: Decimal = None,):
         self._position_side = position_side if position_side is not None else self._position_side
         self._unrealized_pnl = unrealized_pnl if unrealized_pnl is not None else self._unrealized_pnl
         self._entry_price = entry_price if entry_price is not None else self._entry_price
         self._amount = amount if amount is not None else self._amount
+        self._liquidation_price = liquidation_price if liquidation_price is not None else self._liquidation_price

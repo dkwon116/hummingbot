@@ -15,7 +15,8 @@ from hummingbot.core.data_type.trade import Trade
 from hummingbot.core.event.events import (
     OrderFilledEvent,
     OrderType,
-    PositionAction
+    PositionAction,
+    PriceType
 )
 
 from .order_tracker import OrderTracker
@@ -185,19 +186,23 @@ cdef class StrategyBase(TimeIterator):
             object bid_price
             object ask_price
             list markets_data = []
-            list markets_columns = ["Exchange", "Market", "Best Bid Price", "Best Ask Price", "Mid Price"]
+            list markets_columns = ["Exchange", "Market", "Best Bid", "Best Ask", "Mid", "Last", "Spread"]
         try:
             for market_trading_pair_tuple in market_trading_pair_tuples:
                 market, trading_pair, base_asset, quote_asset = market_trading_pair_tuple
                 bid_price = market.get_price(trading_pair, False)
                 ask_price = market.get_price(trading_pair, True)
+                spread = (float(ask_price) / float(bid_price) - 1)
                 mid_price = (bid_price + ask_price)/2
+                last_price = market.get_price_by_type(trading_pair, PriceType.LastTrade)
                 markets_data.append([
                     market.display_name,
                     trading_pair,
                     float(bid_price),
                     float(ask_price),
-                    float(mid_price)
+                    float(mid_price),
+                    float(last_price),
+                    f"{spread:.2%}"
                 ])
             return pd.DataFrame(data=markets_data, columns=markets_columns)
 

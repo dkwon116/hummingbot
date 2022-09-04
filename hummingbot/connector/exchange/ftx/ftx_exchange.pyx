@@ -513,6 +513,10 @@ cdef class FtxExchange(ExchangeBase):
             return s_decimal_0
 
         return quantized_amount
+    
+    def get_min_order_size(self, trading_pair: str):
+        trading_rule: TradingRule = self._trading_rules[trading_pair]
+        return Decimal(trading_rule.min_order_size)
 
     async def place_order(self,
                           order_id: str,

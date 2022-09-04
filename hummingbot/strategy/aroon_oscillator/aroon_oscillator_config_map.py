@@ -127,7 +127,7 @@ aroon_oscillator_config_map = {
                          "will increase the trend side spread, and decrease the opposite side spread. "
                          "Values below 1 will decrease its affect, increasing trade likelihood, but decrease risk. ",
                   type_str="decimal",
-                  validator=lambda v: validate_decimal(v, min_value=0, max_value=1, inclusive=True),
+                  validator=lambda v: validate_decimal(v, min_value=0, max_value=3, inclusive=True),
                   default=Decimal("0.5")),
     "order_refresh_time":
         ConfigVar(key="order_refresh_time",
@@ -145,7 +145,7 @@ aroon_oscillator_config_map = {
                   required_if=lambda: not (using_exchange("radar_relay")() or
                                            (using_exchange("bamboo_relay")())),
                   type_str="float",
-                  default=Decimal("1800"),
+                  default=Decimal("18000"),
                   validator=lambda v: validate_decimal(v, 0, inclusive=False)),
     "order_refresh_tolerance_pct":
         ConfigVar(key="order_refresh_tolerance_pct",
@@ -238,20 +238,28 @@ aroon_oscillator_config_map = {
                          "if your order gets filled (in seconds)? >>> ",
                   type_str="float",
                   validator=lambda v: validate_decimal(v, min_value=0, inclusive=False),
-                  default=60),
+                  default=10),
     "hanging_orders_enabled":
         ConfigVar(key="hanging_orders_enabled",
                   prompt="Do you want to enable hanging orders? (Yes/No) >>> ",
                   type_str="bool",
-                  default=False,
+                  default=True,
                   validator=validate_bool),
-    "hanging_orders_cancel_pct":
-        ConfigVar(key="hanging_orders_cancel_pct",
-                  prompt="At what spread percentage (from mid price) will hanging orders be canceled? "
+    "long_hanging_orders_cancel_pct":
+        ConfigVar(key="long_hanging_orders_cancel_pct",
+                  prompt="At what spread percentage (from mid price) will long hanging orders be canceled? "
                          "(Enter 1 to indicate 1%) >>> ",
                   required_if=lambda: aroon_oscillator_config_map.get("hanging_orders_enabled").value,
                   type_str="decimal",
-                  default=Decimal("10"),
+                  default=Decimal("30"),
+                  validator=lambda v: validate_decimal(v, 0, 100, inclusive=False)),
+    "short_hanging_orders_cancel_pct":
+        ConfigVar(key="short_hanging_orders_cancel_pct",
+                  prompt="At what spread percentage (from mid price) will short hanging orders be canceled? "
+                         "(Enter 1 to indicate 1%) >>> ",
+                  required_if=lambda: aroon_oscillator_config_map.get("hanging_orders_enabled").value,
+                  type_str="decimal",
+                  default=Decimal("30"),
                   validator=lambda v: validate_decimal(v, 0, 100, inclusive=False)),
     "order_optimization_enabled":
         ConfigVar(key="order_optimization_enabled",
@@ -310,4 +318,66 @@ aroon_oscillator_config_map = {
                   required_if=lambda: False,
                   default=None,
                   type_str="json"),
+    "long_order_delay_multiple":
+        ConfigVar(key="long_order_delay_multiple",
+                  prompt="What is the mutiplier used to extend filled order delay for long in downtrend? >>> ",
+                  type_str="int",
+                  validator=lambda v: validate_int(v, min_value=-1, inclusive=False),
+                  default=6),
+    "short_order_delay_multiple":
+        ConfigVar(key="short_order_delay_multiple",
+                  prompt="What is the mutiplier used to extend filled order delay for short in uptrend? >>> ",
+                  type_str="int",
+                  validator=lambda v: validate_int(v, min_value=-1, inclusive=False),
+                  default=2),
+    "vol_to_spread_multiplier":
+        ConfigVar(key="vol_to_spread_multiplier",
+                  prompt="Enter the Volatility threshold multiplier: "
+                         "(If market volatility multiplied by this value is above the minimum spread, "
+                         "it will increase the minimum and maximum spread value) >>> ",
+                  type_str="decimal",
+                  validator=lambda v: validate_decimal(v, 0, 10, inclusive=True),
+                  default=1.5),
+    "volatility_buffer_size":
+        ConfigVar(key="volatility_buffer_size",
+                  prompt="Enter amount of ticks that will be stored to calculate volatility >>> ",
+                  type_str="int",
+                  validator=lambda v: validate_decimal(v, 5, 600),
+                  default=60),
+    "accumulate_base":
+        ConfigVar(key="accumulate_base",
+                  prompt="Want to accumulate base asset? Sells order amount in base and buys equivalent quote value >>> ",
+                  required_if=lambda: False,
+                  default=False,
+                  type_str="json"),
+    "enable_bb_restriction":
+        ConfigVar(key="enable_bb_restriction",
+                  prompt="Don't buy or sell over price goes over bollinger band (Using half of Long EMA interval and length) >>> ",
+                  required_if=lambda: False,
+                  default=True,
+                  type_str="json"),
+    "enable_one_way":
+        ConfigVar(key="enable_one_way",
+                  prompt="Buy first and place sell order after >>> ",
+                  required_if=lambda: False,
+                  default=False,
+                  type_str="json"),
+    "vol_avoid_inv_multiplier":
+        ConfigVar(key="vol_avoid_inv_multiplier",
+                  prompt="Multiplier to increase volatility sensibility in trending market >>> ",
+                  type_str="decimal",
+                  validator=lambda v: validate_decimal(v, 0, 10, inclusive=True),
+                  default=1.5),
+    "aroon_distribution":
+        ConfigVar(key="aroon_distribution",
+                  prompt="Weight used for aroon calculation (5m,30m,1h,4h) >>> ",
+                  type_str="str",
+                  required_if=lambda: False,
+                  default="0.25,0.25,0.25,0.25"),
+    "osc_distribution":
+        ConfigVar(key="osc_distribution",
+                  prompt="Weight used for aroon oscillation calculation (5m,30m,1h,4h) >>> ",
+                  type_str="str",
+                  required_if=lambda: False,
+                  default="0.25,0.25,0.25,0.25")                  
 }

@@ -3,7 +3,8 @@ from hummingbot.client.config.config_validators import (
     validate_exchange,
     validate_market_trading_pair,
     validate_decimal,
-    validate_bool
+    validate_bool,
+    validate_int
 )
 from hummingbot.client.config.config_helpers import parse_cvar_value
 import hummingbot.client.settings as settings
@@ -234,5 +235,122 @@ cross_exchange_market_making_config_map = {
         default=Decimal("5"),
         type_str="decimal",
         validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
-    )
+    ),
+    "ema_length": ConfigVar(
+        key="ema_length",
+        prompt="Sampling length of regression (interval set as 5m)>>> ",
+        default=205,
+        validator=lambda v: validate_decimal(v, 1, 10000),
+        type_str="int",
+    ),
+    "fast_ema_length": ConfigVar(
+        key="fast_ema_length",
+        prompt="Sampling length of fast regression (interval set as 5m)>>> ",
+        default=163,
+        validator=lambda v: validate_decimal(v, 1, 10000),
+        type_str="int",
+    ),
+    "std_length": ConfigVar(
+        key="std_length",
+        prompt="Sampling length of Stdev (interval set as 5m)>>> ",
+        default=8,
+        validator=lambda v: validate_decimal(v, 1, 10000),
+        type_str="int",
+    ),
+    "sampling_interval": ConfigVar(
+        key="sampling_interval",
+        prompt="Sampling interval to collect data in minutes >>> ",
+        default=5,
+        validator=lambda v: validate_decimal(v, 1, 10000),
+        type_str="int",
+    ),
+    "initial_ema": ConfigVar(
+        key="initial_ema",
+        prompt="Initial EMA value to use (get from TV) >>>)",
+        default=Decimal("1215"),
+        type_str="decimal",
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(3000), inclusive=True)
+    ),
+    "initial_fast_ema": ConfigVar(
+        key="initial_fast_ema",
+        prompt="Initial fast EMA value to use (get from TV) >>>)",
+        default=Decimal("1215"),
+        type_str="decimal",
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(3000), inclusive=True)
+    ),
+    "enable_reg_offset": ConfigVar(
+        key="enable_reg_offset",
+        prompt="Use linear regression beta as offset (rolling regression)>>> ",
+        default=False,
+        validator=lambda v: validate_bool(v),
+        type_str="bool",
+    ),
+    "fixed_beta": ConfigVar(
+        key="fixed_beta",
+        prompt="Beta offset to use (Enter 1 to indicate 1% >>>)",
+        default=Decimal("1215"),
+        type_str="decimal",
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(3000), inclusive=True)
+    ),
+    "disparity_sensitivity": ConfigVar(
+        key="disparity_sensitivity",
+        prompt="Threshold to apply disparity (disp = current ratio / ratio ema) >>> ",
+        default=Decimal("0.006"),
+        type_str="decimal",
+        required_if=lambda: False,
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
+    ),
+    "disparity_factor": ConfigVar(
+        key="disparity_factor",
+        prompt="Factor applied to disparity >>> ",
+        default=Decimal("0.5"),
+        type_str="decimal",
+        required_if=lambda: False,
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
+    ),
+    "std_factor": ConfigVar(
+        key="std_factor",
+        prompt="Factor applied to Stdev >>> ",
+        default=Decimal("0.04"),
+        type_str="decimal",
+        required_if=lambda: False,
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
+    ),
+    "trend_factor": ConfigVar(
+        key="trend_factor",
+        prompt="Factor applied to trend change (fast_ema / fast_ema[2]) >>> ",
+        default=Decimal("10.9"),
+        type_str="decimal",
+        required_if=lambda: False,
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
+    ),
+    "enable_best_price": ConfigVar(
+        key="enable_best_price",
+        prompt="Use price above bid ask for best price? >>> ",
+        default=False,
+        validator=lambda v: validate_bool(v),
+        type_str="bool",
+    ),
+    "order_levels":
+        ConfigVar(key="order_levels",
+                  prompt="How many orders do you want to place on both sides? >>> ",
+                  type_str="int",
+                  validator=lambda v: validate_int(v, min_value=-1, inclusive=False),
+                  default=1),
+    "order_level_amount":
+        ConfigVar(key="order_level_amount",
+                  prompt="How much do you want to increase or decrease the order size for each "
+                         "additional order? (decrease < 0 > increase) >>> ",
+                  required_if=lambda: cross_exchange_market_making_config_map.get("order_levels").value > 1,
+                  type_str="decimal",
+                  validator=lambda v: validate_decimal(v),
+                  default=0),
+    "order_level_spread":
+        ConfigVar(key="order_level_spread",
+                  prompt="Enter the price increments (as percentage) for subsequent "
+                         "orders? (Enter 1 to indicate 1%) >>> ",
+                  required_if=lambda: cross_exchange_market_making_config_map.get("order_levels").value > 1,
+                  type_str="decimal",
+                  validator=lambda v: validate_decimal(v, 0, 100, inclusive=True),
+                  default=Decimal("0")),
 }

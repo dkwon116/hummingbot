@@ -170,7 +170,8 @@ class TelegramNotifier(NotifierBase):
         bot = bot or self._updater.bot
 
         # command options that show up on user's screen
-        approved_commands = ["start", "stop", "status", "history", "config"]
+        # approved_commands = ["start", "stop", "status", "history", "config"]
+        approved_commands = []
         keyboard = self._divide_chunks(approved_commands)
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 

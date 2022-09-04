@@ -52,6 +52,8 @@ def start(self):
         custom_api_update_interval = c_map.get("custom_api_update_interval").value
         order_refresh_tolerance_pct = c_map.get("order_refresh_tolerance_pct").value / Decimal('100')
         order_override = c_map.get("order_override").value
+        liquidity_providing = c_map.get("liquidity_providing").value
+        budget_constraint = c_map.get("budget_constraint").value
 
         trading_pair: str = raw_trading_pair
         maker_assets: Tuple[str, str] = self._initialize_market_assets(exchange, [trading_pair])[0]
@@ -113,6 +115,8 @@ def start(self):
             hb_app_notification=True,
             order_override={} if order_override is None else order_override,
             should_wait_order_cancel_confirmation=should_wait_order_cancel_confirmation,
+            liquidity_providing=liquidity_providing,
+            budget_constraint=budget_constraint
         )
     except Exception as e:
         self._notify(str(e))

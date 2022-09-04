@@ -90,15 +90,15 @@ cdef class OrderTracker(TimeIterator):
     @property
     def tracked_limit_orders_data_frame(self) -> List[pd.DataFrame]:
         limit_orders = [
-            [market_trading_pair_tuple.market.display_name, market_trading_pair_tuple.trading_pair, order_id,
-             order.quantity,
+            [market_trading_pair_tuple.market.display_name, market_trading_pair_tuple.trading_pair, order.is_buy, order_id,
+             order.quantity, order.price,
              "n/a" if "//" in order.client_order_id else
              pd.Timestamp(int(order.client_order_id[-16:]) / 1e6, unit='s', tz='UTC').strftime('%Y-%m-%d %H:%M:%S')
              ]
             for market_trading_pair_tuple, order_map in self._tracked_limit_orders.items()
             for order_id, order in order_map.items()]
 
-        return pd.DataFrame(data=limit_orders, columns=["market", "trading_pair", "order_id", "quantity", "timestamp"])
+        return pd.DataFrame(data=limit_orders, columns=["market", "trading_pair", "is_buy", "order_id", "quantity", "price", "timestamp"])
 
     @property
     def tracked_market_orders(self) -> List[Tuple[ConnectorBase, MarketOrder]]:
@@ -107,13 +107,13 @@ cdef class OrderTracker(TimeIterator):
 
     @property
     def tracked_market_orders_data_frame(self) -> List[pd.DataFrame]:
-        market_orders = [[market_trading_pair_tuple.market.display_name, market_trading_pair_tuple.trading_pair,
+        market_orders = [[market_trading_pair_tuple.market.display_name, market_trading_pair_tuple.trading_pair, order.is_buy,
                           order_id, order.amount,
                           pd.Timestamp(order.timestamp, unit='s', tz='UTC').strftime('%Y-%m-%d %H:%M:%S')]
                          for market_trading_pair_tuple, order_map in self._tracked_market_orders.items()
                          for order_id, order in order_map.items()]
 
-        return pd.DataFrame(data=market_orders, columns=["market", "trading_pair", "order_id", "quantity", "timestamp"])
+        return pd.DataFrame(data=market_orders, columns=["market", "trading_pair", 'is_buy', "order_id", "quantity", "timestamp"])
 
     @property
     def in_flight_cancels(self) -> Dict[str, float]:

@@ -38,3 +38,5 @@ slippage: null
 
 # amount of time pass to retry submiting limit order again
 max_order_age: null
+
+spot_offset_amount: null

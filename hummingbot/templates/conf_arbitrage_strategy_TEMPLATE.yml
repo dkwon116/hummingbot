@@ -34,3 +34,9 @@ secondary_to_primary_quote_conversion_rate: null
 
 # For more detailed information, see:
 # https://docs.hummingbot.io/strategies/arbitrage/#configuration-parameters
+
+balance_buffer: null
+bb_buffer_size: null
+slippage_buffer: null
+ema_buffer_size: null
+enable_bb_offset: null

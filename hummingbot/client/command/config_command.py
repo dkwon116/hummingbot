@@ -55,7 +55,9 @@ global_configs_to_display = ["autofill_import",
                              "global_token_symbol",
                              "rate_limits_share_pct",
                              "create_command_timeout",
-                             "other_commands_timeout"]
+                             "other_commands_timeout",
+                             "binance_order_update_slot",
+                             "binance_broker_id"]
 color_settings_to_display = ["top-pane",
                              "bottom-pane",
                              "output-pane",

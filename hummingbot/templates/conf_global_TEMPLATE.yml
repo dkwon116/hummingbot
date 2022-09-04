@@ -22,6 +22,15 @@ binance_perpetual_api_secret: null
 binance_perpetual_testnet_api_key: null
 binance_perpetual_testnet_api_secret: null
 
+binance_perp_coin_api_key: null
+binance_perp_coin_api_secret: null
+
+binance_perp_coin_testnet_api_key: null
+binance_perp_coin_testnet_api_secret: null
+
+bithumb_api_key: null
+bithumb_secret_key: null
+
 bittrex_api_key: null
 bittrex_secret_key: null
 
@@ -46,6 +55,10 @@ dydx_perpetual_ethereum_address: null
 ftx_api_key: null
 ftx_secret_key: null
 ftx_subaccount_name: null
+
+ftx_perp_api_key: null
+ftx_perp_secret_key: null
+ftx_perp_subaccount_name: null
 
 huobi_api_key: null
 huobi_secret_key: null
@@ -129,6 +142,12 @@ wazirx_secret_key: null
 mexc_api_key: null
 mexc_secret_key: null
 
+upbit_api_key: null
+upbit_secret_key: null
+
+gopax_api_key: null
+gopax_secret_key: null
+
 # Ethereum wallet address: required for trading on a DEX
 ethereum_wallet: null
 ethereum_rpc_url: null
@@ -171,7 +190,7 @@ send_error_logs: null
 # Advanced configs: Do NOT touch unless you understand what you are changing
 instance_id: null
 log_level: INFO
-debug_console: false
+debug_console: true
 strategy_report_interval: 900.0
 logger_override_whitelist:
   - hummingbot.strategy.arbitrage
@@ -216,7 +235,10 @@ heartbeat_enabled:
 heartbeat_interval_min:
 # a list of binance markets (for trades/pnl reporting) separated by ',' e.g. RLC-USDT,RLC-BTC
 binance_markets:
-
+# When to update active orders (including) hanging for _update_order_status function
+# Allocate to one of 30 seconds slot for 10 minutes (20 slots total)
+binance_order_update_slot: null
+binance_broker_id: null
 
 
 # Command Shortcuts
