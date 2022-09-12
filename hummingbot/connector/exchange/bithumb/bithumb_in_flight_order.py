@@ -21,6 +21,7 @@ class BithumbInFlightOrder(InFlightOrderBase):
                  trade_type: TradeType,
                  price: Decimal,
                  amount: Decimal,
+                 creation_timestamp: float,
                  initial_state: str = "OPEN"):
         super().__init__(
             client_order_id,
@@ -30,6 +31,7 @@ class BithumbInFlightOrder(InFlightOrderBase):
             trade_type,
             price,
             amount,
+            creation_timestamp,
             initial_state,
         )
         self.trade_id_set = set()
@@ -63,15 +65,16 @@ class BithumbInFlightOrder(InFlightOrderBase):
         :return: formatted InFlightOrder
         """
         retval = BithumbInFlightOrder(
-                client_order_id=data["client_order_id"],
-                exchange_order_id=data["exchange_order_id"],
-                trading_pair=data["trading_pair"],
-                order_type=getattr(OrderType, data["order_type"]),
-                trade_type=getattr(TradeType, data["trade_type"]),
-                price=Decimal(data["price"]),
-                amount=Decimal(data["amount"]),
-                initial_state=data["last_state"]
-            )
+            client_order_id=data["client_order_id"],
+            exchange_order_id=data["exchange_order_id"],
+            trading_pair=data["trading_pair"],
+            order_type=getattr(OrderType, data["order_type"]),
+            trade_type=getattr(TradeType, data["trade_type"]),
+            price=Decimal(data["price"]),
+            amount=Decimal(data["amount"]),
+            creation_timestamp=float(data["created_at"] if "created_at" in data else 0),
+            initial_state=data["last_state"]
+        )
         retval.executed_amount_base = Decimal(data["executed_amount_base"])
         retval.executed_amount_quote = Decimal(data["executed_amount_quote"])
         retval.fee_asset = data["fee_asset"]

@@ -6,7 +6,7 @@ import requests
 import simplejson
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, List, Dict, Any, AsyncIterable
+from typing import TYPE_CHECKING, Any, AsyncIterable, Dict, List, Optional
 from urllib.parse import urlencode
 
 import aiohttp
@@ -17,15 +17,15 @@ from hummingbot.core.data_type.cancellation_result import CancellationResult
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.event.events import (
+    AccountEvent, PositionModeChangeEvent,
     MarketEvent,
-    OrderType,
     OrderFilledEvent,
-    TradeType,
-    PositionAction, PositionSide,
-    FundingInfo, FundingPaymentCompletedEvent,
+    FundingPaymentCompletedEvent,
     BuyOrderCompletedEvent,
     SellOrderCompletedEvent, OrderCancelledEvent, MarketTransactionFailureEvent,
     MarketOrderFailureEvent, SellOrderCreatedEvent, BuyOrderCreatedEvent)
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
+from hummingbot.core.data_type.funding_info import FundingInfo
 from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.logger import HummingbotLogger
@@ -36,14 +36,26 @@ from hummingbot.connector.derivative.ftx_perp.ftx_perp_order_status import FtxPe
 from hummingbot.connector.derivative.ftx_perp.ftx_perp_user_stream_tracker import FtxPerpUserStreamTracker
 from hummingbot.connector.derivative.position import Position
 from hummingbot.connector.perpetual_trading import PerpetualTrading
-from hummingbot.connector.exchange_base import NaN, ExchangeBase, s_decimal_NaN
+from hummingbot.connector.exchange_base import ExchangeBase, s_decimal_NaN
 from hummingbot.connector.trading_rule import TradingRule
+from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
 from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
 from hummingbot.core.utils.estimate_fee import estimate_fee
+
+
 
 from hummingbot.connector.derivative.ftx_perp.ftx_perp_utils import (
     convert_from_exchange_trading_pair,
     convert_to_exchange_trading_pair)
+
+from hummingbot.connector.derivative.ftx_perp import ftx_perp_constants as CONSTANTS, ftx_perp_utils, ftx_perp_web_utils as web_utils
+from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
+from hummingbot.core.data_type.order_book_tracker_data_source import OrderBookTrackerDataSource
+from hummingbot.connector.derivative.ftx_perp.ftx_perp_api_order_book_data_source import FtxPerpAPIOrderBookDataSource
+from hummingbot.connector.derivative.ftx_perp.ftx_perp_web_utils import build_api_factory
+
+if TYPE_CHECKING:
+    from hummingbot.client.config.config_helpers import ClientConfigAdapter
 
 bm_logger = None
 s_decimal_0 = Decimal(0)
@@ -77,16 +89,15 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
         return bm_logger
 
     def __init__(self,
+                 client_config_map: "ClientConfigAdapter",
                  ftx_perp_secret_key: str,
                  ftx_perp_api_key: str,
                  ftx_perp_subaccount_name: str = None,
                  poll_interval: float = 5.0,
                  trading_pairs: Optional[List[str]] = None,
                  trading_required: bool = True):
-        super().__init__()
-        ExchangeBase.__init__(self)
-        PerpetualTrading.__init__(self)
 
+        self._trading_pairs = trading_pairs
         self._real_time_balance_update = False
         self._account_available_balances = {}
         self._account_balances = {}
@@ -101,9 +112,15 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
         self._poll_interval = poll_interval
         self._shared_client = None
         
+        ExchangeBase.__init__(self, client_config_map=client_config_map)
+        PerpetualTrading.__init__(self, self._trading_pairs)
+
         self._trading_required = trading_required
         self._trading_rules = {}
-        self._order_book_tracker = FtxPerpOrderBookTracker(trading_pairs=trading_pairs)
+        self._api_factory = build_api_factory()
+        self._order_book_tracker = FtxPerpOrderBookTracker(
+            trading_pairs=trading_pairs,
+            api_factory=self._api_factory)
         self._user_stream_tracker = FtxPerpUserStreamTracker(ftx_perp_auth=self._ftx_perp_auth, trading_pairs=trading_pairs)
 
         self._trading_rules_polling_task = None
@@ -111,9 +128,8 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
         self._user_stream_tracker_task = None
         self._user_stream_event_listener_task = None
         self._check_network_interval = 60.0
-        self._trading_pairs = trading_pairs
 
-        # self._position_mode = None
+        self._position_mode = None
         self._funding_info_polling_task = None
         self._funding_fee_polling_task = None
         self._funding_payment_span = [0, 30]
@@ -136,6 +152,7 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
             "order_book_initialized": self._order_book_tracker.ready,
             "account_balance": len(self._account_balances) > 0 if self._trading_required else True,
             "trading_rule_initialized": len(self._trading_rules) > 0 if self._trading_required else True,
+            "position_mode": self.position_mode,
             "funding_info": len(self._funding_info) > 0,
             "user_stream_initializied": self._user_stream_tracker.data_source.last_recv_time > 0
         }
@@ -177,7 +194,7 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
                 self._poll_notifier.set()
         self._last_timestamp = timestamp
 
-    def _update_inflight_order(self, tracked_order: FtxPerpOrderStatus, event: Dict[str, Any]):
+    def _update_inflight_order(self, tracked_order: FtxPerpInFlightOrder, event: Dict[str, Any]):
         issuable_events: List[MarketEvent] = tracked_order.update(event)
 
         # Issue relevent events
@@ -192,21 +209,17 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
                                                     tracked_order.order_type,
                                                     new_price,
                                                     new_amount,
-                                                    self.get_fee(
-                                                        base,
-                                                        quote,
-                                                        tracked_order.order_type,
-                                                        tracked_order.trade_type,
-                                                        new_amount,
-                                                        new_price
-                                                    ),
-                                                    tracked_order.client_order_id))
+                                                    AddedToCostTradeFee(flat_fees=[TokenAmount(quote, s_decimal_0)]),
+                                                    str(int(self._time() * 1e6)),
+                                                    self._leverage[tracked_order.trading_pair],
+                                                    tracked_order.position))
             elif market_event == MarketEvent.OrderCancelled:
                 self.logger().info(f"Successfully cancelled order {tracked_order.client_order_id}")
                 self.stop_tracking_order(tracked_order.client_order_id)
                 self.trigger_event(self.MARKET_ORDER_CANCELLED_EVENT_TAG,
                                    OrderCancelledEvent(self.current_timestamp, tracked_order.client_order_id))
             elif market_event == MarketEvent.OrderFailure:
+                self.stop_tracking_order(tracked_order.client_order_id)
                 self.trigger_event(self.MARKET_ORDER_FAILURE_EVENT_TAG,
                                    MarketOrderFailureEvent(self.current_timestamp,
                                                            tracked_order.client_order_id,
@@ -219,16 +232,8 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
                                                           tracked_order.client_order_id,
                                                           base,
                                                           quote,
-                                                          base,
                                                           tracked_order.executed_amount_base,
                                                           tracked_order.executed_amount_quote,
-                                                          self.get_fee(
-                                                              base,
-                                                              quote,
-                                                              tracked_order.order_type,
-                                                              tracked_order.trade_type,
-                                                              new_amount,
-                                                              new_price),
                                                           tracked_order.order_type))
             elif market_event == MarketEvent.SellOrderCompleted:
                 self.logger().info(f"The market sell order {tracked_order.client_order_id} has completed "
@@ -238,16 +243,8 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
                                                            tracked_order.client_order_id,
                                                            base,
                                                            quote,
-                                                           quote,
                                                            tracked_order.executed_amount_base,
                                                            tracked_order.executed_amount_quote,
-                                                           self.get_fee(
-                                                               base,
-                                                               quote,
-                                                               tracked_order.order_type,
-                                                               tracked_order.trade_type,
-                                                               new_amount,
-                                                               new_price),
                                                            tracked_order.order_type))
             # Complete the order if relevent
             if tracked_order.is_done:
@@ -275,15 +272,19 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
         self._in_flight_orders_snapshot_timestamp = self.current_timestamp
 
     async def _update_positions(self):
-        positions = await self._api_request("GET", path_url="/positions")
+        params = {"showAvgPrice": True}
+        positions = await self._api_request("GET", path_url="/positions", params=params)
         for position in positions["result"]:
             trading_pair = convert_from_exchange_trading_pair(position.get("future"))
-            position_side = PositionSide["BOTH"]
             amount = Decimal(position.get("netSize"))
+            position_side = PositionSide.SHORT if amount < s_decimal_0 else PositionSide.LONG
             pos_key = self.position_key(trading_pair, position_side)
             if amount != 0:
-                unrealized_pnl = Decimal(position.get("recentPnl")) if position.get("recentPnl") is not None else Decimal(position.get("unrealizedPnl"))
-                entry_price = Decimal(position.get("recentAverageOpenPrice")) if position.get("recentAverageOpenPrice") is not None else Decimal(position.get("entryPrice"))
+                # self.logger().info(f"FTX Position {position}")
+                # unrealized_pnl = Decimal(position.get("recentPnl")) if position.get("recentPnl") is not None else Decimal(position.get("unrealizedPnl"))
+                unrealized_pnl = Decimal(position.get("recentPnl"))
+                # entry_price = Decimal(position.get("recentAverageOpenPrice")) if position.get("recentAverageOpenPrice") is not None else Decimal(position.get("entryPrice"))
+                entry_price = Decimal(position.get("recentAverageOpenPrice"))
                 leverage = Decimal(self._leverage[trading_pair])
                 liquidation_price = Decimal(position.get("estimatedLiquidationPrice"))
 
@@ -560,52 +561,38 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
     def set_leverage(self, trading_pair: str, leverage: int = 1):
         safe_ensure_future(self._set_leverage(trading_pair, leverage))
 
-    # async def _set_position_mode(self, position_mode: PositionMode):
-    #     initial_mode = await self._get_position_mode()
-    #     if initial_mode != position_mode:
-    #         params = {
-    #             "dualSidePosition": position_mode.value
-    #         }
-    #         response = await self.request(
-    #             method=MethodType.POST,
-    #             path=CONSTANTS.CHANGE_POSITION_MODE_URL,
-    #             params=params,
-    #             add_timestamp=True,
-    #             is_signed=True,
-    #             limit_id=CONSTANTS.POST_POSITION_MODE_LIMIT_ID,
-    #             return_err=True
-    #         )
-    #         if response["msg"] == "success" and response["code"] == 200:
-    #             self.logger().info(f"Using {position_mode.name} position mode.")
-    #             self._position_mode = position_mode
-    #         else:
-    #             self.logger().error(f"Unable to set postion mode to {position_mode.name}.")
-    #             self.logger().info(f"Using {initial_mode.name} position mode.")
-    #             self._position_mode = initial_mode
-    #     else:
-    #         self.logger().info(f"Using {position_mode.name} position mode.")
-    #         self._position_mode = position_mode
+    def set_position_mode(self, position_mode: PositionMode):
+        """
+        CoinFLEX only supports ONEWAY position mode.
+        """
+        self._position_mode = PositionMode.ONEWAY
 
-    # async def _get_position_mode(self) -> Optional[PositionMode]:
-    #     # To-do: ensure there's no active order or contract before changing position mode
-    #     if self._position_mode is None:
-    #         response = await self.request(
-    #             method=MethodType.GET,
-    #             path=CONSTANTS.CHANGE_POSITION_MODE_URL,
-    #             add_timestamp=True,
-    #             is_signed=True,
-    #             limit_id=CONSTANTS.GET_POSITION_MODE_LIMIT_ID,
-    #             return_err=True
-    #         )
-    #         self._position_mode = PositionMode.HEDGE if response["dualSidePosition"] else PositionMode.ONEWAY
+        if self._trading_pairs is not None:
+            for trading_pair in self._trading_pairs:
+                if position_mode == PositionMode.ONEWAY:
+                    self.trigger_event(AccountEvent.PositionModeChangeSucceeded,
+                                       PositionModeChangeEvent(
+                                           self.current_timestamp,
+                                           trading_pair,
+                                           position_mode
+                                       ))
+                    self.logger().info(f"Using {position_mode.name} position mode.")
+                else:
+                    self.trigger_event(AccountEvent.PositionModeChangeFailed,
+                                       PositionModeChangeEvent(
+                                           self.current_timestamp,
+                                           trading_pair,
+                                           position_mode,
+                                           "FTX only supports ONEWAY position mode."
+                                       ))
+                    self.logger().error(f"Unable to set postion mode to {position_mode.name}.")
+                    self.logger().info(f"Using {self._position_mode.name} position mode.")
 
-    #     return self._position_mode
-
-    # def set_position_mode(self, position_mode: PositionMode):
-    #     safe_ensure_future(self._set_position_mode(position_mode))
-
-    # def supported_position_modes(self):
-    #     return [PositionMode.ONEWAY, PositionMode.HEDGE]
+    def supported_position_modes(self):
+        """
+        This method needs to be overridden to provide the accurate information depending on the exchange.
+        """
+        return [PositionMode.ONEWAY]
 
     def get_buy_collateral_token(self, trading_pair: str) -> str:
         trading_rule: TradingRule = self._trading_rules[trading_pair]
@@ -717,7 +704,7 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
                           trading_pair: str,
                           amount: Decimal,
                           order_type: OrderType = OrderType.LIMIT,
-                          price: Optional[Decimal] = s_decimal_0,
+                          price: Optional[Decimal] = s_decimal_NaN,
                           position_action: PositionAction = PositionAction.OPEN):
 
         trading_rule = self._trading_rules[trading_pair]
@@ -786,6 +773,7 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
                                                         amount,
                                                         price,
                                                         order_id,
+                                                        tracked_order.creation_timestamp,
                                                         exchange_order_id,
                                                         self._leverage[trading_pair],
                                                         position_action.name))
@@ -819,10 +807,10 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
                            trading_pair: str,
                            amount: Decimal,
                            order_type: OrderType = OrderType.LIMIT,
-                           price: Optional[Decimal] = NaN,
+                           price: Optional[Decimal] = s_decimal_NaN,
                            position_action: PositionAction = PositionAction.CLOSE):
         trading_rule = self._trading_rules[trading_pair]
-        
+
         amount = self.quantize_order_amount(trading_pair, amount)
         price = self.quantize_order_price(trading_pair, price)
 
@@ -889,6 +877,7 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
                                                          amount,
                                                          price,
                                                          order_id,
+                                                         tracked_order.creation_timestamp,
                                                          exchange_order_id,
                                                          self._leverage[trading_pair],
                                                          position_action.name))
@@ -1057,4 +1046,6 @@ class FtxPerpDerivative(ExchangeBase, PerpetualTrading):
         is_maker = order_type in (OrderType.LIMIT, OrderType.LIMIT_MAKER)
         return estimate_fee("ftx_perp", is_maker)
 
-
+    async def all_trading_pairs(self) -> List[str]:
+        # This method should be removed and instead we should implement _initialize_trading_pair_symbol_map
+        return await FtxPerpAPIOrderBookDataSource.fetch_trading_pairs()

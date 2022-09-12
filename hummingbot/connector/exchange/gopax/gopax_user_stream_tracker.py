@@ -26,10 +26,12 @@ class GopaxUserStreamTracker(UserStreamTracker):
             cls._logger = logging.getLogger(__name__)
         return cls._logger
 
-    def __init__(
-        self, throttler: AsyncThrottler, shared_client: Optional[aiohttp.ClientSession] = None, auth_assistant: Optional[GopaxAuth] = None, domain: Optional[str] = None
-    ):
-        super().__init__()
+    def __init__(self, 
+                 throttler: AsyncThrottler, 
+                 shared_client: Optional[aiohttp.ClientSession] = None, 
+                 auth_assistant: Optional[GopaxAuth] = None,
+                 domain: Optional[str] = None
+                ):
         self._auth_assistant: GopaxAuth = auth_assistant
         self._shared_client = shared_client
         self._ev_loop: asyncio.events.AbstractEventLoop = asyncio.get_event_loop()
@@ -37,6 +39,9 @@ class GopaxUserStreamTracker(UserStreamTracker):
         self._user_stream_tracking_task: Optional[asyncio.Task] = None
         self._domain = domain
         self._throttler = throttler
+        super().__init__(data_source=GopaxAPIUserStreamDataSource(
+            throttler=self._throttler, shared_client=self._shared_client, auth_assistant=self._auth_assistant, domain=self._domain
+        ))
 
     @property
     def data_source(self) -> UserStreamTrackerDataSource:

@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Dict, Any
 
-from hummingbot.core.event.events import OrderType, TradeType
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.connector.in_flight_order_base import InFlightOrderBase
 
 
@@ -16,6 +16,7 @@ class BinancePerpCoinInFlightOrder(InFlightOrderBase):
                  amount: Decimal,
                  leverage: int,
                  position: str,
+                 created_at: float,
                  initial_state: str = "PENDING_CREATE"):
         super().__init__(
             client_order_id,
@@ -27,6 +28,7 @@ class BinancePerpCoinInFlightOrder(InFlightOrderBase):
             amount,
             initial_state
         )
+        self.created_at = created_at
         self.trade_id_set = set()
         self.leverage = leverage
         self.position = position
@@ -57,6 +59,7 @@ class BinancePerpCoinInFlightOrder(InFlightOrderBase):
             trade_type=getattr(TradeType, data["trade_type"]),
             price=Decimal(data["price"]),
             amount=Decimal(data["amount"]),
+            created_at=float(data["created_at"] if "created_at" in data else 0),
             initial_state=data["last_state"]
         )
         return_val.executed_amount_base = Decimal(data["executed_amount_base"])

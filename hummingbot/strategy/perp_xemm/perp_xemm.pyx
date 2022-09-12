@@ -20,21 +20,13 @@ from typing import (
     Optional
 )
 from hummingbot.core.clock cimport Clock
-from hummingbot.core.event.events import TradeType
 from hummingbot.core.data_type.limit_order cimport LimitOrder
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.connector.exchange_base cimport ExchangeBase
-from hummingbot.core.event.events import (
-    OrderType,
-    PositionAction,
-    PositionMode,
-    BuyOrderCompletedEvent,
-    SellOrderCompletedEvent,
-    TradeType,
-    PriceType
-)
+from hummingbot.core.event.events import BuyOrderCompletedEvent, SellOrderCompletedEvent
+from hummingbot.core.data_type.common import TradeType, PriceType, OrderType, PositionAction, PositionMode
 
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.strategy.strategy_base cimport StrategyBase
@@ -1538,7 +1530,7 @@ cdef class PerpXEMMStrategy(StrategyBase):
         quote_asset = trading_pair[1]
         base_amount = Decimal(order_filled_event.amount)
         price = Decimal(order_filled_event.price)
-        trade_fee = order_filled_event.trade_fee[1][0][1] if market is "Maker" else s_decimal_zero
+        trade_fee = Decimal(order_filled_event.trade_fee["flat_fees"][0]["amount"]) if market is "Maker" else s_decimal_zero
 
         self.logger().info(f"[Filled]-{market}-{trade_type}-{base_amount}-{base_asset}-[Price]-{price:.4f}-[Fee]-{trade_fee}-[ID]-{order_id}-{exchange.name}")
 
@@ -2005,6 +1997,7 @@ cdef class PerpXEMMStrategy(StrategyBase):
         if is_buy:
             # allowed until spot quote balance becomes 0
             maker_balance_in_quote = maker_market.c_get_available_balance(market_pair.maker.quote_asset)
+            # _, maker_balance_in_quote = self.get_adjusted_available_balance(market_pair)
             active_buys_in_quote = sum([b.price * b.quantity for _, b in self.active_buys])
             maker_balance_in_quote += active_buys_in_quote
 
@@ -2068,6 +2061,28 @@ cdef class PerpXEMMStrategy(StrategyBase):
             order_amount = maker_balance if maker_balance < order_amount else order_amount
 
         return maker_market.quantize_order_amount(maker_trading_pair, order_amount)
+
+    def get_adjusted_available_balance(self, market_pair):
+        """
+        Calculates the available balance, plus the amount attributed to orders.
+        :return: (base amount, quote amount) in Decimal
+        """
+
+        maker = market_pair.maker
+        base_balance = maker.market.get_available_balance(maker.base_asset)
+        quote_balance = maker.market.get_available_balance(maker.quote_asset)
+        orders = []
+
+        if market_pair.maker in self._sb_order_tracker.get_limit_orders():
+            orders = list(self._sb_order_tracker.get_limit_orders()[market_pair.maker].values())
+
+        for order in orders:
+            if order.is_buy:
+                quote_balance += order.quantity * order.price
+            else:
+                base_balance += order.quantity
+
+        return base_balance, quote_balance
 
     # def deleverage_position(self, market_pair):
     #     """

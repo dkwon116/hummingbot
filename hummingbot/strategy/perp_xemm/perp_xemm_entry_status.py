@@ -1,10 +1,5 @@
 #!/usr/bin/env python
 from decimal import Decimal
-from re import A
-
-from regex import B
-from sympy import C
-
 s_decimal_zero = Decimal("0")
 s_decimal_nan = Decimal("nan")
 zero_tuple = (s_decimal_zero, s_decimal_zero)

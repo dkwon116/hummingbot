@@ -16,6 +16,9 @@ cdef class PureMarketMakingStrategy(StrategyBase):
         int _order_levels
         int _buy_levels
         int _sell_levels
+        object _split_order_levels_enabled
+        object _bid_order_level_spreads
+        object _ask_order_level_spreads
         object _order_level_spread
         object _order_level_amount
         double _order_refresh_time
@@ -56,6 +59,7 @@ cdef class PureMarketMakingStrategy(StrategyBase):
 
         bint _liquidity_providing
         object _budget_constraint
+        object _moving_price_band
 
     cdef object c_get_mid_price(self)
     cdef object c_create_base_proposal(self)
@@ -78,3 +82,4 @@ cdef class PureMarketMakingStrategy(StrategyBase):
     cdef bint c_to_create_orders(self, object proposal)
     cdef c_execute_orders_proposal(self, object proposal)
     cdef set_timers(self)
+    cdef c_apply_moving_price_band(self, object proposal)

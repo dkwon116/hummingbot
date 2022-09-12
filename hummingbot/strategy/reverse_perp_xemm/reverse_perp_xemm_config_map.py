@@ -20,7 +20,7 @@ from typing import Optional
 
 
 def exchange_on_validated(value: str) -> None:
-    required_exchanges.append(value)
+    required_exchanges.add(value)
 
 
 def maker_trading_pair_prompt():

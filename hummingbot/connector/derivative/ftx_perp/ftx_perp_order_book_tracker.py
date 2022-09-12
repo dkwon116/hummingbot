@@ -8,6 +8,7 @@ from collections import (
     deque,
 )
 from typing import (
+    TYPE_CHECKING,
     Optional,
     Dict,
     List,
@@ -28,6 +29,10 @@ from hummingbot.core.data_type.order_book_message import (
 from hummingbot.core.data_type.order_book_tracker import OrderBookTracker
 from hummingbot.core.utils.async_utils import safe_ensure_future
 from hummingbot.logger import HummingbotLogger
+from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
+
+# if TYPE_CHECKING:
+#     from hummingbot.connector.derivative.ftx_perp.ftx_perp_derivative import FtxPerpDerivative
 
 
 class FtxPerpOrderBookTracker(OrderBookTracker):
@@ -39,14 +44,17 @@ class FtxPerpOrderBookTracker(OrderBookTracker):
             cls._btobt_logger = logging.getLogger(__name__)
         return cls._btobt_logger
 
-    def __init__(
-        self,
-        trading_pairs: Optional[List[str]] = None,
+    def __init__(self,
+                 trading_pairs: List[str],
+                 api_factory: Optional[WebAssistantsFactory] = None
     ):
+
         super().__init__(
-            data_source=FtxPerpAPIOrderBookDataSource(trading_pairs=trading_pairs),
-            trading_pairs=trading_pairs
-        )
+            FtxPerpAPIOrderBookDataSource(
+                trading_pairs=trading_pairs, 
+                api_factory=api_factory
+            ),
+            trading_pairs)
 
         self._ev_loop: asyncio.BaseEventLoop = asyncio.get_event_loop()
         self._order_book_snapshot_stream: asyncio.Queue = asyncio.Queue()

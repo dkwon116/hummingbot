@@ -1,9 +1,9 @@
 from typing import Optional, Union
 from datetime import datetime
 from urllib.parse import urlencode
+from pydantic import Field, SecretStr
 
-from hummingbot.client.config.config_methods import using_exchange
-from hummingbot.client.config.config_var import ConfigVar
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap, ClientFieldData
 from hummingbot.connector.exchange.upbit import upbit_constants as CONSTANTS
 from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
 
@@ -154,17 +154,45 @@ def validate_price(price: Union[int, float, str]) -> float:
     return price - (price % unit)
 
 
-KEYS = {
-    "upbit_api_key":
-        ConfigVar(key="upbit_api_key",
-                  prompt="Enter your Upbit API key >>> ",
-                  required_if=using_exchange("upbit"),
-                  is_secure=True,
-                  is_connect_key=True),
-    "upbit_secret_key":
-        ConfigVar(key="upbit_secret_key",
-                  prompt="Enter your Upbit secret key >>> ",
-                  required_if=using_exchange("upbit"),
-                  is_secure=True,
-                  is_connect_key=True),
-}
+# KEYS = {
+#     "upbit_api_key":
+#         ConfigVar(key="upbit_api_key",
+#                   prompt="Enter your Upbit API key >>> ",
+#                   required_if=using_exchange("upbit"),
+#                   is_secure=True,
+#                   is_connect_key=True),
+#     "upbit_secret_key":
+#         ConfigVar(key="upbit_secret_key",
+#                   prompt="Enter your Upbit secret key >>> ",
+#                   required_if=using_exchange("upbit"),
+#                   is_secure=True,
+#                   is_connect_key=True),
+# }
+
+
+class UpbitConfigMap(BaseConnectorConfigMap):
+    connector: str = Field(default="upbit", client_data=None)
+    upbit_api_key: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your Upbit API key",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+    upbit_secret_key: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your Upbit secret key",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+
+    class Config:
+        title = "upbit"
+
+
+KEYS = UpbitConfigMap.construct()

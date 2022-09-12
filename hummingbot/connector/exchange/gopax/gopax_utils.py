@@ -1,9 +1,9 @@
 from typing import Optional, Union
 from datetime import datetime
 from urllib.parse import urlencode
+from pydantic import Field, SecretStr
 
-from hummingbot.client.config.config_methods import using_exchange
-from hummingbot.client.config.config_var import ConfigVar
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap, ClientFieldData
 from hummingbot.connector.exchange.gopax import gopax_constants as CONSTANTS
 from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
 
@@ -164,17 +164,45 @@ def validate_price(price: Union[int, float, str]) -> float:
     return price - (price % unit)
 
 
-KEYS = {
-    "gopax_api_key":
-        ConfigVar(key="gopax_api_key",
-                  prompt="Enter your Gopax API key >>> ",
-                  required_if=using_exchange("gopax"),
-                  is_secure=True,
-                  is_connect_key=True),
-    "gopax_secret_key":
-        ConfigVar(key="gopax_secret_key",
-                  prompt="Enter your Gopax secret key >>> ",
-                  required_if=using_exchange("gopax"),
-                  is_secure=True,
-                  is_connect_key=True),
-}
+# KEYS = {
+#     "gopax_api_key":
+#         ConfigVar(key="gopax_api_key",
+#                   prompt="Enter your Gopax API key >>> ",
+#                   required_if=using_exchange("gopax"),
+#                   is_secure=True,
+#                   is_connect_key=True),
+#     "gopax_secret_key":
+#         ConfigVar(key="gopax_secret_key",
+#                   prompt="Enter your Gopax secret key >>> ",
+#                   required_if=using_exchange("gopax"),
+#                   is_secure=True,
+#                   is_connect_key=True),
+# }
+
+
+class GopaxConfigMap(BaseConnectorConfigMap):
+    connector: str = Field(default="gopax", client_data=None)
+    gopax_api_key: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your GOPAX API key",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+    gopax_secret_key: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your GOPAX secret key",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+
+    class Config:
+        title = "gopax"
+
+
+KEYS = GopaxConfigMap.construct()

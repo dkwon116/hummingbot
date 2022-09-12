@@ -1,12 +1,6 @@
 import logging
 import copy
-from typing import (
-    Dict,
-    List,
-    Optional,
-    Any,
-    AsyncIterable,
-)
+from typing import TYPE_CHECKING, Any, AsyncIterable, Dict, List, Optional
 from decimal import Decimal
 import asyncio
 import json
@@ -15,12 +9,16 @@ import math
 import time
 from async_timeout import timeout
 
-from hummingbot.core.network_iterator import NetworkStatus
-from hummingbot.logger import HummingbotLogger
-from hummingbot.core.clock import Clock
-from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
+from hummingbot.connector.exchange.bithumb.bithumb_auth import BithumbAuth
+from hummingbot.connector.exchange.bithumb.bithumb_order_book_tracker import BithumbOrderBookTracker
+from hummingbot.connector.exchange.bithumb.bithumb_in_flight_order import BithumbInFlightOrder
+from hummingbot.connector.exchange.bithumb.bithumb_api_order_book_data_source import BithumbAPIOrderBookDataSource
+
+from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.connector.trading_rule import TradingRule
+from hummingbot.core.clock import Clock
 from hummingbot.core.data_type.cancellation_result import CancellationResult
+from hummingbot.core.data_type.common import OpenOrder, OrderType, TradeType
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.event.events import (
@@ -31,21 +29,18 @@ from hummingbot.core.event.events import (
     OrderCancelledEvent,
     BuyOrderCreatedEvent,
     SellOrderCreatedEvent,
-    MarketOrderFailureEvent,
-    OrderType,
-    TradeType,
-    TradeFee
+    MarketOrderFailureEvent
 )
-from hummingbot.connector.exchange_base import ExchangeBase
-from hummingbot.connector.exchange.bithumb.bithumb_order_book_tracker import BithumbOrderBookTracker
-# from hummingbot.connector.exchange.bithumb.bithumb_user_stream_tracker import BithumbUserStreamTracker
-from hummingbot.connector.exchange.bithumb.bithumb_auth import BithumbAuth
-from hummingbot.connector.exchange.bithumb.bithumb_in_flight_order import BithumbInFlightOrder
-from hummingbot.connector.exchange.bithumb import bithumb_utils
-from hummingbot.connector.exchange.bithumb import bithumb_constants as CONSTANTS
-from hummingbot.core.data_type.common import OpenOrder
-from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 
+from hummingbot.connector.exchange.bithumb import bithumb_constants as CONSTANTS, bithumb_utils
+from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
+from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
+from hummingbot.logger import HummingbotLogger
+from hummingbot.core.network_iterator import NetworkStatus
+from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
+
+if TYPE_CHECKING:
+    from hummingbot.client.config.config_helpers import ClientConfigAdapter
 
 ctce_logger = None
 s_decimal_NaN = Decimal("nan")
@@ -70,6 +65,7 @@ class BithumbExchange(ExchangeBase):
         return ctce_logger
 
     def __init__(self,
+                 client_config_map: "ClientConfigAdapter",
                  bithumb_api_key: str,
                  bithumb_secret_key: str,
                  trading_pairs: Optional[List[str]] = None,
@@ -81,16 +77,17 @@ class BithumbExchange(ExchangeBase):
         :param trading_pairs: The market trading pairs which to track order book data.
         :param trading_required: Whether actual trading is needed.
         """
-        super().__init__()
+        super().__init__(client_config_map)
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
         self._bithumb_auth = BithumbAuth(bithumb_api_key, bithumb_secret_key)
         self._shared_client = aiohttp.ClientSession()
         self._throttler = AsyncThrottler(CONSTANTS.RATE_LIMITS)
 
-        self._order_book_tracker = BithumbOrderBookTracker(shared_client=self._shared_client,
-                                                            throttler=self._throttler,
-                                                            trading_pairs=trading_pairs)
+        self._order_book_tracker = BithumbOrderBookTracker(
+            shared_client=self._shared_client,
+            throttler=self._throttler,
+            trading_pairs=trading_pairs)
         # self._user_stream_tracker = BithumbUserStreamTracker(bithumb_auth=self._bithumb_auth,
         #                                                        shared_client=self._shared_client,
         #                                                        )
@@ -520,6 +517,7 @@ class BithumbExchange(ExchangeBase):
                                    amount,
                                    price,
                                    order_id,
+                                   tracked_order.creation_timestamp,
                                    exchange_order_id
                                ))
         except asyncio.CancelledError:
@@ -554,7 +552,8 @@ class BithumbExchange(ExchangeBase):
             order_type=order_type,
             trade_type=trade_type,
             price=price,
-            amount=amount
+            amount=amount,
+            creation_timestamp=self.current_timestamp
         )
 
     def stop_tracking_order(self, order_id: str):
@@ -689,7 +688,6 @@ class BithumbExchange(ExchangeBase):
                         await self._process_trade_message(trade_msg)
                 self._process_order_message(result)
 
-
     def _process_order_message(self, order_msg: Dict[str, Any]):
         """
         Updates in-flight order and triggers cancellation or failure event if needed.
@@ -752,7 +750,10 @@ class BithumbExchange(ExchangeBase):
                 tracked_order.order_type,
                 Decimal(str(trade_msg["price"])),
                 Decimal(str(trade_msg["units"])),
-                TradeFee(0.0, [(tracked_order.quote_asset, Decimal(str(fee_paid)))]),
+                # TradeFee(0.0, [(tracked_order.quote_asset, Decimal(str(fee_paid)))]),
+                AddedToCostTradeFee(
+                    flat_fees=[TokenAmount(tracked_order.quote_asset, fee_paid)]
+                ),
                 exchange_trade_id=trade_msg["transaction_date"]
             )
         )
@@ -771,13 +772,10 @@ class BithumbExchange(ExchangeBase):
                                            tracked_order.client_order_id,
                                            tracked_order.base_asset,
                                            tracked_order.quote_asset,
-                                           tracked_order.fee_asset,
                                            tracked_order.executed_amount_base,
                                            tracked_order.executed_amount_quote,
-                                           tracked_order.fee_paid,
                                            tracked_order.order_type))
             self.stop_tracking_order(tracked_order.client_order_id)
-
 
     async def cancel_all(self, timeout_seconds: float):
         """
@@ -834,14 +832,15 @@ class BithumbExchange(ExchangeBase):
                 order_type: OrderType,
                 order_side: TradeType,
                 amount: Decimal,
-                price: Decimal = s_decimal_NaN) -> TradeFee:
+                price: Decimal = s_decimal_NaN,
+                is_maker: Optional[bool] = None) -> AddedToCostTradeFee:
         """
         To get trading fee, this function is simplified by using fee override configuration. Most parameters to this
         function are ignore except order_type. Use OrderType.LIMIT_MAKER to specify you want trading fee for
         maker order.
         """
         is_maker = order_type is OrderType.LIMIT_MAKER
-        return TradeFee(percent=self.estimate_fee_pct(is_maker))
+        return AddedToCostTradeFee(percent=self.estimate_fee_pct(is_maker))
 
     async def get_open_orders(self, pairs) -> List[OpenOrder]:
         ret_val = []
@@ -868,3 +867,7 @@ class BithumbExchange(ExchangeBase):
                     )
                 )
         return ret_val
+    
+    async def all_trading_pairs(self) -> List[str]:
+        # This method should be removed and instead we should implement _initialize_trading_pair_symbol_map
+        return await BithumbAPIOrderBookDataSource.fetch_trading_pairs()

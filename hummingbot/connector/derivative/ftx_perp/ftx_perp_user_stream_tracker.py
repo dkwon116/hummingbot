@@ -26,7 +26,7 @@ class FtxPerpUserStreamTracker(UserStreamTracker):
         ftx_perp_auth: Optional[FtxPerpAuth] = None,
         trading_pairs: Optional[List[str]] = [],
     ):
-        super().__init__()
+        super().__init__(FtxPerpAPIUserStreamDataSource(ftx_perp_auth=ftx_perp_auth))
         self._ftx_perp_auth: FtxPerpAuth = ftx_perp_auth
         self._trading_pairs: List[str] = trading_pairs
         self._ev_loop: asyncio.events.AbstractEventLoop = asyncio.get_event_loop()

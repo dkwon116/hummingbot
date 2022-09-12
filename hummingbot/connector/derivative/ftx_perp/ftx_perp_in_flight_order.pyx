@@ -1,10 +1,10 @@
 from decimal import Decimal
 from typing import Optional, Dict, Any, List
 
-from hummingbot.core.event.events import OrderType, TradeType
+from hummingbot.core.data_type.common import OrderType, TradeType, PositionAction
 from hummingbot.connector.derivative.ftx_perp.ftx_perp_order_status import FtxPerpOrderStatus
 from hummingbot.connector.in_flight_order_base import InFlightOrderBase
-from hummingbot.core.event.events import (OrderFilledEvent, TradeType, OrderType, TradeFee, MarketEvent)
+from hummingbot.core.event.events import (OrderFilledEvent, MarketEvent)
 
 import logging
 
@@ -21,16 +21,15 @@ cdef class FtxPerpInFlightOrder(InFlightOrderBase):
                  position: str,
                  created_at: float,
                  initial_state: str = "new"):
-        super().__init__(
-            client_order_id,
-            exchange_order_id,
-            trading_pair,
-            order_type,
-            trade_type,
-            price,
-            amount,
-            initial_state
-        )
+        super().__init__(client_order_id=client_order_id,
+                         exchange_order_id=exchange_order_id,
+                         trading_pair=trading_pair,
+                         order_type=order_type,
+                         trade_type=trade_type,
+                         price=price,
+                         amount=amount,
+                         initial_state=initial_state,
+                         creation_timestamp=created_at)
         self.created_at = created_at
         self.state = FtxPerpOrderStatus.new
         self.leverage = leverage
@@ -44,6 +43,9 @@ cdef class FtxPerpInFlightOrder(InFlightOrderBase):
         response = super().to_json()
         response["created_at"] = str(self.created_at)
         return response
+    
+    def get_position_action(self, trade_type):
+        return 
 
     @property
     def is_done(self) -> bool:
@@ -78,6 +80,10 @@ cdef class FtxPerpInFlightOrder(InFlightOrderBase):
                 trade_type=getattr(TradeType, data["trade_type"]),
                 price=Decimal(data["price"]),
                 amount=Decimal(data["amount"]),
+                leverage=data["leverage"] if "leverage" in data else 1,
+                position=(data["position"] 
+                          if "position" in data 
+                          else (PositionAction.OPEN.name if getattr(TradeType, data["trade_type"]) is TradeType.BUY else PositionAction.CLOSE.name)),
                 created_at=float(data["created_at"] if "created_at" in data else 0),
                 initial_state=data["last_state"]
             )

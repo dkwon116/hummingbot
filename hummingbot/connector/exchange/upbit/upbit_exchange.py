@@ -1,12 +1,6 @@
 import logging
 import copy
-from typing import (
-    Dict,
-    List,
-    Optional,
-    Any,
-    AsyncIterable,
-)
+from typing import TYPE_CHECKING, Any, AsyncIterable, Dict, List, Optional
 from decimal import Decimal
 import asyncio
 import json
@@ -21,6 +15,7 @@ from hummingbot.core.clock import Clock
 from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.cancellation_result import CancellationResult
+from hummingbot.core.data_type.common import OpenOrder, OrderType, TradeType
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.event.events import (
@@ -31,21 +26,21 @@ from hummingbot.core.event.events import (
     OrderCancelledEvent,
     BuyOrderCreatedEvent,
     SellOrderCreatedEvent,
-    MarketOrderFailureEvent,
-    OrderType,
-    TradeType,
-    TradeFee
+    MarketOrderFailureEvent
 )
 from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.connector.exchange.upbit.upbit_order_book_tracker import UpbitOrderBookTracker
-# from hummingbot.connector.exchange.upbit.upbit_user_stream_tracker import UpbitUserStreamTracker
+from hummingbot.connector.exchange.upbit.upbit_api_order_book_data_source import UpbitAPIOrderBookDataSource
 from hummingbot.connector.exchange.upbit.upbit_auth import UpbitAuth
 from hummingbot.connector.exchange.upbit.upbit_in_flight_order import UpbitInFlightOrder
-from hummingbot.connector.exchange.upbit import upbit_utils
-from hummingbot.connector.exchange.upbit import upbit_constants as CONSTANTS
-from hummingbot.core.data_type.common import OpenOrder
+from hummingbot.connector.exchange.upbit import upbit_constants as CONSTANTS, upbit_utils
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
+from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
 from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
+
+if TYPE_CHECKING:
+    from hummingbot.client.config.config_helpers import ClientConfigAdapter
+
 
 ctce_logger = None
 s_decimal_NaN = Decimal("nan")
@@ -70,6 +65,7 @@ class UpbitExchange(ExchangeBase):
         return ctce_logger
 
     def __init__(self,
+                 client_config_map: "ClientConfigAdapter",
                  upbit_api_key: str,
                  upbit_secret_key: str,
                  trading_pairs: Optional[List[str]] = None,
@@ -81,7 +77,7 @@ class UpbitExchange(ExchangeBase):
         :param trading_pairs: The market trading pairs which to track order book data.
         :param trading_required: Whether actual trading is needed.
         """
-        super().__init__()
+        super().__init__(client_config_map)
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
         self._upbit_auth = UpbitAuth(upbit_api_key, upbit_secret_key)
@@ -530,6 +526,7 @@ class UpbitExchange(ExchangeBase):
                                    amount,
                                    price,
                                    order_id,
+                                   tracked_order.creation_timestamp,
                                    exchange_order_id
                                ))
         except asyncio.CancelledError:
@@ -564,7 +561,8 @@ class UpbitExchange(ExchangeBase):
             order_type=order_type,
             trade_type=trade_type,
             price=price,
-            amount=amount
+            amount=amount,
+            creation_timestamp=self.current_timestamp
         )
 
     def stop_tracking_order(self, order_id: str):
@@ -745,7 +743,10 @@ class UpbitExchange(ExchangeBase):
                 tracked_order.order_type,
                 Decimal(str(trade_msg["price"])),
                 Decimal(str(trade_msg["volume"])),
-                TradeFee(0.0, [(tracked_order.quote_asset, Decimal(str(fee_paid)))]),
+                # TradeFee(0.0, [(tracked_order.quote_asset, Decimal(str(fee_paid)))]),
+                AddedToCostTradeFee(
+                    flat_fees=[TokenAmount(tracked_order.quote_asset, fee_paid)]
+                ),
                 exchange_trade_id=trade_msg["uuid"]
             )
         )
@@ -764,10 +765,8 @@ class UpbitExchange(ExchangeBase):
                                            tracked_order.client_order_id,
                                            tracked_order.base_asset,
                                            tracked_order.quote_asset,
-                                           tracked_order.fee_asset,
                                            tracked_order.executed_amount_base,
                                            tracked_order.executed_amount_quote,
-                                           tracked_order.fee_paid,
                                            tracked_order.order_type))
             self.stop_tracking_order(tracked_order.client_order_id)
 
@@ -825,14 +824,15 @@ class UpbitExchange(ExchangeBase):
                 order_type: OrderType,
                 order_side: TradeType,
                 amount: Decimal,
-                price: Decimal = s_decimal_NaN) -> TradeFee:
+                price: Decimal = s_decimal_NaN,
+                is_maker: Optional[bool] = None) -> AddedToCostTradeFee:
         """
         To get trading fee, this function is simplified by using fee override configuration. Most parameters to this
         function are ignore except order_type. Use OrderType.LIMIT_MAKER to specify you want trading fee for
         maker order.
         """
         is_maker = order_type is OrderType.LIMIT_MAKER
-        return TradeFee(percent=self.estimate_fee_pct(is_maker))
+        return AddedToCostTradeFee(percent=self.estimate_fee_pct(is_maker))
 
     async def get_open_orders(self) -> List[OpenOrder]:
         result = await self._api_request(
@@ -863,3 +863,7 @@ class UpbitExchange(ExchangeBase):
                 )
             )
         return ret_val
+    
+    async def all_trading_pairs(self) -> List[str]:
+        # This method should be removed and instead we should implement _initialize_trading_pair_symbol_map
+        return await UpbitAPIOrderBookDataSource.fetch_trading_pairs()

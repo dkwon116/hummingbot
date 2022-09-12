@@ -11,7 +11,7 @@ class ExponentialMovingAverageIndicator(BaseTrailingIndicator):
 
     def _indicator_calculation(self) -> float:
         ema = pd.Series(self._sampling_buffer.get_as_numpy_array())\
-            .ewm(span=self._sampling_length).mean()
+            .ewm(span=self.sampling_length).mean()
         if len(ema) > 3:
             self._prev_ema.pop(0)
         current_ema = ema[len(ema) - 1]

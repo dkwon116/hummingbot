@@ -1,34 +1,33 @@
 import asyncio
+import functools
 import json
-import time
-import pandas as pd
 import re
-
-from aioresponses import aioresponses
+import time
 from decimal import Decimal
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 from unittest import TestCase
 from unittest.mock import AsyncMock, PropertyMock, patch
 
+import pandas as pd
+from aioresponses import aioresponses
+
+from hummingbot.client.config.client_config_map import ClientConfigMap
+from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.exchange.ndax import ndax_constants as CONSTANTS, ndax_utils
 from hummingbot.connector.exchange.ndax.ndax_exchange import NdaxExchange
 from hummingbot.connector.exchange.ndax.ndax_in_flight_order import (
-    NdaxInFlightOrder, WORKING_LOCAL_STATUS, NdaxInFlightOrderNotCreated
+    WORKING_LOCAL_STATUS,
+    NdaxInFlightOrder,
+    NdaxInFlightOrderNotCreated,
 )
 from hummingbot.connector.exchange.ndax.ndax_order_book import NdaxOrderBook
+from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.connector.trading_rule import TradingRule
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.event.event_logger import EventLogger
-from hummingbot.core.event.events import (
-    MarketEvent,
-    MarketOrderFailureEvent,
-    OrderCancelledEvent,
-    OrderFilledEvent,
-    OrderType,
-    TradeType,
-)
+from hummingbot.core.event.events import MarketEvent, MarketOrderFailureEvent, OrderCancelledEvent, OrderFilledEvent
 from hummingbot.core.network_iterator import NetworkStatus
 from hummingbot.core.utils.async_utils import safe_ensure_future
-from test.hummingbot.connector.network_mocking_assistant import NetworkMockingAssistant
 
 
 class NdaxExchangeTests(TestCase):
@@ -52,8 +51,10 @@ class NdaxExchangeTests(TestCase):
         self.log_records = []
         self.resume_test_event = asyncio.Event()
         self._account_name = "hbot"
+        self.client_config_map = ClientConfigAdapter(ClientConfigMap())
 
-        self.exchange = NdaxExchange(ndax_uid='001',
+        self.exchange = NdaxExchange(client_config_map=self.client_config_map,
+                                     ndax_uid='001',
                                      ndax_api_key='testAPIKey',
                                      ndax_secret_key='testSecret',
                                      ndax_account_name=self._account_name,
@@ -90,6 +91,10 @@ class NdaxExchangeTests(TestCase):
         return any(record.levelname == log_level and record.getMessage() == message
                    for record in self.log_records)
 
+    def async_run_with_timeout(self, coroutine: Awaitable, timeout: int = 1):
+        ret = asyncio.get_event_loop().run_until_complete(asyncio.wait_for(coroutine, timeout))
+        return ret
+
     def _authentication_response(self, authenticated: bool) -> str:
         user = {"UserId": 492,
                 "UserName": "hbot",
@@ -120,6 +125,12 @@ class NdaxExchangeTests(TestCase):
 
     def _mock_responses_done_callback(self, *_, **__):
         self.mock_done_event.set()
+
+    def _return_calculation_and_set_done_event(self, calculation: Callable, *args, **kwargs):
+        if self.resume_test_event.is_set():
+            raise asyncio.CancelledError
+        self.resume_test_event.set()
+        return calculation(*args, **kwargs)
 
     def _simulate_reset_poll_notifier(self):
         self.exchange._poll_notifier.clear()
@@ -170,12 +181,12 @@ class NdaxExchangeTests(TestCase):
 
         # Add a dummy message for the websocket to read and include in the "messages" queue
         self.mocking_assistant.add_websocket_text_message(ws_connect_mock, json.dumps('dummyMessage'))
-        asyncio.get_event_loop().run_until_complete(self.resume_test_event.wait())
+        self.async_run_with_timeout(self.resume_test_event.wait())
         self.resume_test_event.clear()
 
         try:
             self.exchange_task.cancel()
-            asyncio.get_event_loop().run_until_complete(self.exchange_task)
+            self.async_run_with_timeout(self.exchange_task)
         except asyncio.CancelledError:
             pass
         except Exception:
@@ -192,11 +203,8 @@ class NdaxExchangeTests(TestCase):
             asyncio.CancelledError())
         self.exchange._user_stream_tracker._user_stream = dummy_user_stream
 
-        # Yield processor for the exchange to process the new message
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.3))
-
         with self.assertRaises(asyncio.CancelledError):
-            asyncio.get_event_loop().run_until_complete(self.tracker_task)
+            self.async_run_with_timeout(self.tracker_task)
 
     def test_exchange_logs_unknown_event_message(self):
         payload = {}
@@ -205,13 +213,16 @@ class NdaxExchangeTests(TestCase):
                    "n": 'UnknownEndpoint',
                    "o": json.dumps(payload)}
 
+        mock_user_stream = AsyncMock()
+        mock_user_stream.get.side_effect = functools.partial(self._return_calculation_and_set_done_event,
+                                                             lambda: message)
+
+        self.exchange._user_stream_tracker._user_stream = mock_user_stream
+
         self.exchange_task = asyncio.get_event_loop().create_task(
             self.exchange._user_stream_event_listener())
 
-        self.exchange._user_stream_tracker.user_stream.put_nowait(message)
-
-        # Yield processor for the exchange to process the new message
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self.assertTrue(self._is_logged('DEBUG', f"Unknown event received from the connector ({message})"))
 
@@ -231,12 +242,16 @@ class NdaxExchangeTests(TestCase):
                    "n": CONSTANTS.ACCOUNT_POSITION_EVENT_ENDPOINT_NAME,
                    "o": json.dumps(payload)}
 
+        mock_user_stream = AsyncMock()
+        mock_user_stream.get.side_effect = functools.partial(self._return_calculation_and_set_done_event,
+                                                             lambda: message)
+
+        self.exchange._user_stream_tracker._user_stream = mock_user_stream
+
         self.exchange_task = asyncio.get_event_loop().create_task(
             self.exchange._user_stream_event_listener())
 
-        self.exchange._user_stream_tracker.user_stream.put_nowait(message)
-        # Yield processor for the exchange to process the new message
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self.assertEqual(Decimal('10499.1'), self.exchange.get_balance('BTC'))
         self.assertEqual(Decimal('10499.1') - Decimal('2.1'), self.exchange.available_balances['BTC'])
@@ -273,17 +288,21 @@ class NdaxExchangeTests(TestCase):
 
         inflight_order = self.exchange.in_flight_orders["3"]
 
+        mock_user_stream = AsyncMock()
+        mock_user_stream.get.side_effect = functools.partial(self._return_calculation_and_set_done_event,
+                                                             lambda: message)
+
+        self.exchange._user_stream_tracker._user_stream = mock_user_stream
+
         self.exchange_task = asyncio.get_event_loop().create_task(
             self.exchange._user_stream_event_listener())
 
-        self.exchange._user_stream_tracker.user_stream.put_nowait(message)
-        # Yield processor for the exchange to process the new message
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self.assertEqual("Canceled", inflight_order.last_state)
         self.assertTrue(inflight_order.is_cancelled)
         self.assertFalse(inflight_order.client_order_id in self.exchange.in_flight_orders)
-        self.assertTrue(self._is_logged("INFO", f"Successfully cancelled order {inflight_order.client_order_id}"))
+        self.assertTrue(self._is_logged("INFO", f"Successfully canceled order {inflight_order.client_order_id}"))
         self.assertEqual(1, len(self.cancel_order_logger.event_log))
         cancel_event = self.cancel_order_logger.event_log[0]
         self.assertEqual(OrderCancelledEvent, type(cancel_event))
@@ -321,12 +340,16 @@ class NdaxExchangeTests(TestCase):
 
         inflight_order = self.exchange.in_flight_orders["3"]
 
+        mock_user_stream = AsyncMock()
+        mock_user_stream.get.side_effect = functools.partial(self._return_calculation_and_set_done_event,
+                                                             lambda: message)
+
+        self.exchange._user_stream_tracker._user_stream = mock_user_stream
+
         self.exchange_task = asyncio.get_event_loop().create_task(
             self.exchange._user_stream_event_listener())
 
-        self.exchange._user_stream_tracker.user_stream.put_nowait(message)
-        # Yield processor for the exchange to process the new message
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self.assertEqual("Rejected", inflight_order.last_state)
         self.assertTrue(inflight_order.is_failure)
@@ -372,12 +395,16 @@ class NdaxExchangeTests(TestCase):
 
         inflight_order = self.exchange.in_flight_orders["3"]
 
+        mock_user_stream = AsyncMock()
+        mock_user_stream.get.side_effect = functools.partial(self._return_calculation_and_set_done_event,
+                                                             lambda: message)
+
+        self.exchange._user_stream_tracker._user_stream = mock_user_stream
+
         self.exchange_task = asyncio.get_event_loop().create_task(
             self.exchange._user_stream_event_listener())
 
-        self.exchange._user_stream_tracker.user_stream.put_nowait(message)
-        # Yield processor for the exchange to process the new message
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self.assertEqual("FullyExecuted", inflight_order.last_state)
         self.assertIn(payload["TradeId"], inflight_order.trade_id_set)
@@ -406,10 +433,8 @@ class NdaxExchangeTests(TestCase):
         self.assertEqual(inflight_order.client_order_id, buy_event.order_id)
         self.assertEqual(inflight_order.base_asset, buy_event.base_asset)
         self.assertEqual(inflight_order.quote_asset, buy_event.quote_asset)
-        self.assertEqual(inflight_order.fee_asset, buy_event.fee_asset)
         self.assertEqual(inflight_order.executed_amount_base, buy_event.base_asset_amount)
         self.assertEqual(inflight_order.executed_amount_quote, buy_event.quote_asset_amount)
-        self.assertEqual(inflight_order.fee_paid, buy_event.fee_amount)
         self.assertEqual(inflight_order.order_type, buy_event.order_type)
         self.assertEqual(inflight_order.exchange_order_id, buy_event.exchange_order_id)
 
@@ -448,9 +473,13 @@ class NdaxExchangeTests(TestCase):
         self.exchange_task = asyncio.get_event_loop().create_task(
             self.exchange._user_stream_event_listener())
 
-        self.exchange._user_stream_tracker.user_stream.put_nowait(message)
-        # Yield processor for the exchange to process the new message
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+        mock_user_stream = AsyncMock()
+        mock_user_stream.get.side_effect = functools.partial(self._return_calculation_and_set_done_event,
+                                                             lambda: message)
+
+        self.exchange._user_stream_tracker._user_stream = mock_user_stream
+
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self.assertEqual("FullyExecuted", inflight_order.last_state)
         self.assertIn(payload["TradeId"], inflight_order.trade_id_set)
@@ -480,10 +509,8 @@ class NdaxExchangeTests(TestCase):
         self.assertEqual(inflight_order.client_order_id, buy_event.order_id)
         self.assertEqual(inflight_order.base_asset, buy_event.base_asset)
         self.assertEqual(inflight_order.quote_asset, buy_event.quote_asset)
-        self.assertEqual(inflight_order.fee_asset, buy_event.fee_asset)
         self.assertEqual(inflight_order.executed_amount_base, buy_event.base_asset_amount)
         self.assertEqual(inflight_order.executed_amount_quote, buy_event.quote_asset_amount)
-        self.assertEqual(inflight_order.fee_paid, buy_event.fee_amount)
         self.assertEqual(inflight_order.order_type, buy_event.order_type)
         self.assertEqual(inflight_order.exchange_order_id, buy_event.exchange_order_id)
 
@@ -597,7 +624,7 @@ class NdaxExchangeTests(TestCase):
         task = asyncio.get_event_loop().create_task(
             self.exchange._get_account_id()
         )
-        resp = asyncio.get_event_loop().run_until_complete(task)
+        resp = self.async_run_with_timeout(task)
         self.assertEqual(resp, account_id)
 
     @patch("aiohttp.ClientSession.get", new_callable=AsyncMock)
@@ -628,7 +655,7 @@ class NdaxExchangeTests(TestCase):
         task = asyncio.get_event_loop().create_task(
             self.exchange._get_account_id()
         )
-        resp = asyncio.get_event_loop().run_until_complete(task)
+        resp = self.async_run_with_timeout(task)
 
         self.assertTrue(self._is_logged('ERROR', f"There is no account named {self._account_name} "
                                                  f"associated with the current NDAX user"))
@@ -656,7 +683,7 @@ class NdaxExchangeTests(TestCase):
         self.exchange_task = asyncio.get_event_loop().create_task(
             self.exchange._update_balances()
         )
-        asyncio.get_event_loop().run_until_complete(self.exchange_task)
+        self.async_run_with_timeout(self.exchange_task)
 
         self.assertEqual(Decimal(str(10.0)), self.exchange.get_balance(self.base_asset))
 
@@ -673,6 +700,7 @@ class NdaxExchangeTests(TestCase):
             TradeType.SELL,
             Decimal(str(41720.83)),
             Decimal("1"),
+            1640001112.0,
             "Working",
         )
         self.exchange._in_flight_orders.update({
@@ -780,20 +808,27 @@ class NdaxExchangeTests(TestCase):
             "")
 
         # Simulate _trading_pair_id_map initialized.
-        self.exchange._order_book_tracker.data_source._trading_pair_id_map.update({
+        self.exchange.order_book_tracker.data_source._trading_pair_id_map.update({
             self.trading_pair: 5
         })
 
         self.exchange_task = asyncio.get_event_loop().create_task(self.exchange._update_order_status())
-        asyncio.get_event_loop().run_until_complete(self.exchange_task)
+        self.async_run_with_timeout(self.exchange_task)
         self.assertEqual(0, len(self.exchange.in_flight_orders))
 
     @patch("aiohttp.ClientSession.get", new_callable=AsyncMock)
     def test_update_order_status_error_response(self, mock_api):
 
         # Simulates order being tracked
-        order: NdaxInFlightOrder = NdaxInFlightOrder("0", "2628", self.trading_pair, OrderType.LIMIT, TradeType.SELL,
-                                                     Decimal(str(41720.83)), Decimal("1"))
+        order: NdaxInFlightOrder = NdaxInFlightOrder(
+            "0",
+            "2628",
+            self.trading_pair,
+            OrderType.LIMIT,
+            TradeType.SELL,
+            Decimal(str(41720.83)),
+            Decimal("1"),
+            creation_timestamp=1640001112.0)
         self.exchange._in_flight_orders.update({
             order.client_order_id: order
         })
@@ -865,12 +900,12 @@ class NdaxExchangeTests(TestCase):
             "")
 
         # Simulate _trading_pair_id_map initialized.
-        self.exchange._order_book_tracker.data_source._trading_pair_id_map.update({
+        self.exchange.order_book_tracker.data_source._trading_pair_id_map.update({
             self.trading_pair: 5
         })
 
         self.exchange_task = asyncio.get_event_loop().create_task(self.exchange._update_order_status())
-        asyncio.get_event_loop().run_until_complete(self.exchange_task)
+        self.async_run_with_timeout(self.exchange_task)
         self.assertEqual(1, len(self.exchange.in_flight_orders))
 
         self.assertEqual(0, len(self.exchange.in_flight_orders[order.client_order_id].trade_id_set))
@@ -887,6 +922,7 @@ class NdaxExchangeTests(TestCase):
             TradeType.SELL,
             Decimal(str(41720.83)),
             Decimal("1"),
+            1640001112.0,
             "Working"
         )
         self.exchange._in_flight_orders.update({
@@ -894,17 +930,17 @@ class NdaxExchangeTests(TestCase):
         })
 
         # Simulate _trading_pair_id_map initialized.
-        self.exchange._order_book_tracker.data_source._trading_pair_id_map.update({
+        self.exchange.order_book_tracker.data_source._trading_pair_id_map.update({
             self.trading_pair: 5
         })
         self.exchange_task = asyncio.get_event_loop().create_task(self.exchange._update_order_status())
-        asyncio.get_event_loop().run_until_complete(self.exchange_task)
+        self.async_run_with_timeout(self.exchange_task)
 
         self.assertEqual(1, len(self.exchange._in_flight_orders))
         self.assertEqual(1, self.exchange._order_not_found_records[order.client_order_id])
 
         self.exchange_task = asyncio.get_event_loop().create_task(self.exchange._update_order_status())
-        asyncio.get_event_loop().run_until_complete(self.exchange_task)
+        self.async_run_with_timeout(self.exchange_task)
 
         self.assertEqual(0, len(self.exchange._in_flight_orders))
         self.assertEqual(2, self.exchange._order_not_found_records[order.client_order_id])
@@ -913,7 +949,8 @@ class NdaxExchangeTests(TestCase):
     @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange._update_balances", new_callable=AsyncMock)
     @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange._update_order_status", new_callable=AsyncMock)
     @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange.current_timestamp", new_callable=PropertyMock)
-    def test_status_polling_loop(self, mock_ts, mock_update_order_status, mock_balances):
+    @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange._reset_poll_notifier")
+    def test_status_polling_loop(self, _, mock_ts, mock_update_order_status, mock_balances):
         mock_balances.return_value = None
         mock_update_order_status.return_value = None
 
@@ -926,17 +963,16 @@ class NdaxExchangeTests(TestCase):
                 self.exchange._status_polling_loop()
             )
 
-            # Add small delay to ensure an API request is "called"
-            asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.5))
             self.exchange._poll_notifier.set()
 
-            asyncio.get_event_loop().run_until_complete(asyncio.wait_for(self.exchange_task, 2.0))
+            self.async_run_with_timeout(self.exchange_task, 2.0)
 
         self.assertEqual(ts, self.exchange._last_poll_timestamp)
 
     @patch("aiohttp.ClientSession.get")
     @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange.current_timestamp", new_callable=PropertyMock)
-    def test_status_polling_loop_cancels(self, mock_ts, mock_api):
+    @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange._reset_poll_notifier")
+    def test_status_polling_loop_cancels(self, _, mock_ts, mock_api):
         mock_api.side_effect = asyncio.CancelledError
 
         ts: float = time.time()
@@ -947,18 +983,17 @@ class NdaxExchangeTests(TestCase):
             self.exchange_task = asyncio.get_event_loop().create_task(
                 self.exchange._status_polling_loop()
             )
-            # Add small delay to ensure _poll_notifier is set
-            asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.5))
             self.exchange._poll_notifier.set()
 
-            asyncio.get_event_loop().run_until_complete(self.exchange_task)
+            self.async_run_with_timeout(self.exchange_task)
 
         self.assertEqual(0, self.exchange._last_poll_timestamp)
 
     @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange._update_balances", new_callable=AsyncMock)
     @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange._update_order_status", new_callable=AsyncMock)
     @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange.current_timestamp", new_callable=PropertyMock)
-    def test_status_polling_loop_exception_raised(self, mock_ts, mock_update_order_status, mock_balances):
+    @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange._reset_poll_notifier")
+    def test_status_polling_loop_exception_raised(self, _, mock_ts, mock_update_order_status, mock_balances):
         mock_balances.side_effect = lambda: self._create_exception_and_unlock_test_with_event(
             Exception("Dummy test error"))
         mock_update_order_status.side_effect = lambda: self._create_exception_and_unlock_test_with_event(
@@ -972,11 +1007,9 @@ class NdaxExchangeTests(TestCase):
             self.exchange._status_polling_loop()
         )
 
-        # Add small delay to ensure an API request is "called"
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.5))
         self.exchange._poll_notifier.set()
 
-        asyncio.get_event_loop().run_until_complete(self.resume_test_event.wait())
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self.assertEqual(0, self.exchange._last_poll_timestamp)
         self._is_logged("ERROR", "Unexpected error while in status polling loop. Error: ")
@@ -1022,7 +1055,7 @@ class NdaxExchangeTests(TestCase):
         task = asyncio.get_event_loop().create_task(
             self.exchange._update_trading_rules()
         )
-        asyncio.get_event_loop().run_until_complete(task)
+        self.async_run_with_timeout(task)
 
         self.assertTrue(self.trading_pair in self.exchange.trading_rules)
 
@@ -1039,7 +1072,7 @@ class NdaxExchangeTests(TestCase):
         with self.assertRaises(asyncio.TimeoutError):
             self.exchange_task = asyncio.get_event_loop().create_task(self.exchange._trading_rules_polling_loop())
 
-            asyncio.get_event_loop().run_until_complete(
+            self.async_run_with_timeout(
                 asyncio.wait_for(self.exchange_task, 1.0)
             )
 
@@ -1053,7 +1086,7 @@ class NdaxExchangeTests(TestCase):
                 self.exchange._trading_rules_polling_loop()
             )
 
-            asyncio.get_event_loop().run_until_complete(self.exchange_task)
+            self.async_run_with_timeout(self.exchange_task)
 
         self.assertEqual(0, self.exchange._last_poll_timestamp)
 
@@ -1067,7 +1100,7 @@ class NdaxExchangeTests(TestCase):
             self.exchange._trading_rules_polling_loop()
         )
 
-        asyncio.get_event_loop().run_until_complete(self.resume_test_event.wait())
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self._is_logged("ERROR", "Unexpected error while fetching trading rules. Error: ")
 
@@ -1077,7 +1110,7 @@ class NdaxExchangeTests(TestCase):
         self.mocking_assistant.configure_http_request_mock(mock_api)
         self.mocking_assistant.add_http_response(mock_api, 200, mock_response, "")
 
-        result = asyncio.get_event_loop().run_until_complete(self.exchange.check_network())
+        result = self.async_run_with_timeout(self.exchange.check_network())
 
         self.assertEqual(NetworkStatus.CONNECTED, result)
 
@@ -1087,13 +1120,13 @@ class NdaxExchangeTests(TestCase):
         self.mocking_assistant.configure_http_request_mock(mock_api)
         self.mocking_assistant.add_http_response(mock_api, 200, mock_response, "")
 
-        result = asyncio.get_event_loop().run_until_complete(self.exchange.check_network())
+        result = self.async_run_with_timeout(self.exchange.check_network())
         self.assertEqual(NetworkStatus.NOT_CONNECTED, result)
 
         mock_response = {}
         self.mocking_assistant.add_http_response(mock_api, 200, mock_response, "")
 
-        result = asyncio.get_event_loop().run_until_complete(self.exchange.check_network())
+        result = self.async_run_with_timeout(self.exchange.check_network())
         self.assertEqual(NetworkStatus.NOT_CONNECTED, result)
 
     @patch("aiohttp.ClientSession.get", new_callable=AsyncMock)
@@ -1102,13 +1135,13 @@ class NdaxExchangeTests(TestCase):
         self.mocking_assistant.configure_http_request_mock(mock_api)
         self.mocking_assistant.add_http_response(mock_api, 404, mock_response, "")
 
-        result = asyncio.get_event_loop().run_until_complete(self.exchange.check_network())
+        result = self.async_run_with_timeout(self.exchange.check_network())
 
         self.assertEqual(NetworkStatus.NOT_CONNECTED, result)
 
     def test_get_order_book_for_valid_trading_pair(self):
         dummy_order_book = NdaxOrderBook()
-        self.exchange._order_book_tracker.order_books["BTC-USDT"] = dummy_order_book
+        self.exchange.order_book_tracker.order_books["BTC-USDT"] = dummy_order_book
         self.assertEqual(dummy_order_book, self.exchange.get_order_book("BTC-USDT"))
 
     def test_get_order_book_for_invalid_trading_pair_raises_error(self):
@@ -1178,7 +1211,7 @@ class NdaxExchangeTests(TestCase):
 
         self.assertEqual(0, len(self.exchange.in_flight_orders))
         future = self._simulate_create_order(*order_details)
-        asyncio.get_event_loop().run_until_complete(future)
+        self.async_run_with_timeout(future)
 
         self.assertEqual(1, len(self.exchange.in_flight_orders))
         self._is_logged("INFO",
@@ -1224,7 +1257,7 @@ class NdaxExchangeTests(TestCase):
 
         self.assertEqual(0, len(self.exchange.in_flight_orders))
         future = self._simulate_create_order(*order_details)
-        asyncio.get_event_loop().run_until_complete(future)
+        self.async_run_with_timeout(future)
 
         self.assertEqual(1, len(self.exchange.in_flight_orders))
         self._is_logged("INFO",
@@ -1271,11 +1304,16 @@ class NdaxExchangeTests(TestCase):
             "n": CONSTANTS.ORDER_STATE_EVENT_ENDPOINT_NAME,
             "o": json.dumps(payload),
         }
+
+        mock_user_stream = AsyncMock()
+        mock_user_stream.get.side_effect = functools.partial(self._return_calculation_and_set_done_event,
+                                                             lambda: message)
+
+        self.exchange._user_stream_tracker._user_stream = mock_user_stream
+
         self.exchange_task = asyncio.get_event_loop().create_task(self.exchange._user_stream_event_listener())
 
-        self.exchange._user_stream_tracker.user_stream.put_nowait(message)
-        # Yield processor for the exchange to process the new message
-        asyncio.get_event_loop().run_until_complete(asyncio.sleep(0.3))
+        self.async_run_with_timeout(self.resume_test_event.wait())
 
         self.assertEqual(1, len(self.exchange.in_flight_orders))
         tracked_order: NdaxInFlightOrder = self.exchange.in_flight_orders["3"]
@@ -1306,7 +1344,7 @@ class NdaxExchangeTests(TestCase):
         self.assertEqual(0, len(self.exchange.in_flight_orders))
         future = self._simulate_create_order(*order_details)
         with self.assertRaises(asyncio.CancelledError):
-            asyncio.get_event_loop().run_until_complete(future)
+            self.async_run_with_timeout(future)
 
         # InFlightOrder is still 1 since we do not know exactly where did the Cancel occur.
         self.assertEqual(1, len(self.exchange.in_flight_orders))
@@ -1337,7 +1375,7 @@ class NdaxExchangeTests(TestCase):
             self.exchange._create_order(*order_details)
         )
 
-        asyncio.get_event_loop().run_until_complete(self.exchange_task)
+        self.async_run_with_timeout(self.exchange_task)
 
         self.assertEqual(0, len(self.exchange.in_flight_orders))
         self._is_logged("NETWORK", f"Error submitting {TradeType.BUY.name} {OrderType.LIMIT.name} order to NDAX")
@@ -1373,7 +1411,7 @@ class NdaxExchangeTests(TestCase):
         ]
 
         self.assertEqual(0, len(self.exchange.in_flight_orders))
-        asyncio.get_event_loop().run_until_complete(
+        self.async_run_with_timeout(
             self.exchange._create_order(*order_details)
         )
 
@@ -1391,6 +1429,7 @@ class NdaxExchangeTests(TestCase):
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
             amount=Decimal(1.0),
+            creation_timestamp=1640001112.0,
             initial_state="Working",
         )
 
@@ -1424,14 +1463,15 @@ class NdaxExchangeTests(TestCase):
             order_type=OrderType.LIMIT,
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
-            amount=Decimal(1.0))
+            amount=Decimal(1.0),
+            creation_timestamp=1640001112.0)
 
         self.exchange._in_flight_orders.update({
             order.client_order_id: order
         })
 
         # Simulate _trading_pair_id_map initialized.
-        self.exchange._order_book_tracker.data_source._trading_pair_id_map.update({
+        self.exchange.order_book_tracker.data_source._trading_pair_id_map.update({
             self.trading_pair: 5
         })
 
@@ -1500,6 +1540,7 @@ class NdaxExchangeTests(TestCase):
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
             amount=Decimal(1.0),
+            creation_timestamp=1640001112.0,
             initial_state="Working",
         )
 
@@ -1535,6 +1576,7 @@ class NdaxExchangeTests(TestCase):
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
             amount=Decimal(1.0),
+            creation_timestamp=1640001112.0,
             initial_state="Working",
         )
 
@@ -1560,6 +1602,7 @@ class NdaxExchangeTests(TestCase):
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
             amount=Decimal(1.0),
+            creation_timestamp=1640001112.0,
             initial_state="Working",
         )
 
@@ -1599,6 +1642,7 @@ class NdaxExchangeTests(TestCase):
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
             amount=Decimal(1.0),
+            creation_timestamp=1640001112.0,
             initial_state="Working",
         )
 
@@ -1610,7 +1654,8 @@ class NdaxExchangeTests(TestCase):
             self.exchange._execute_cancel(self.trading_pair, order.client_order_id)
         )
 
-        self._is_logged("WARNING", f"Order {order.client_order_id} does not seem to be active, will stop tracking order...")
+        self._is_logged("WARNING",
+                        f"Order {order.client_order_id} does not seem to be active, will stop tracking order...")
 
     @patch("hummingbot.connector.exchange.ndax.ndax_exchange.NdaxExchange._execute_cancel", new_callable=AsyncMock)
     def test_cancel(self, mock_cancel):
@@ -1623,7 +1668,8 @@ class NdaxExchangeTests(TestCase):
             order_type=OrderType.LIMIT,
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
-            amount=Decimal(1.0))
+            amount=Decimal(1.0),
+            creation_timestamp=1640001112.0)
 
         self.exchange._in_flight_orders.update({
             order.client_order_id: order
@@ -1656,7 +1702,7 @@ class NdaxExchangeTests(TestCase):
 
         # Simulate all components initialized
         self.exchange._account_id = 1
-        self.exchange._order_book_tracker._order_books_initialized.set()
+        self.exchange.order_book_tracker._order_books_initialized.set()
         self.exchange._account_balances = {
             self.base_asset: Decimal(str(10.0))
         }
@@ -1670,7 +1716,7 @@ class NdaxExchangeTests(TestCase):
 
         # Simulate all components but account_id not initialized
         self.exchange._account_id = None
-        self.exchange._order_book_tracker._order_books_initialized.set()
+        self.exchange.order_book_tracker._order_books_initialized.set()
         self.exchange._account_balances = {}
         self._simulate_trading_rules_initialized()
         self.exchange._user_stream_tracker.data_source._last_recv_time = 0
@@ -1682,7 +1728,7 @@ class NdaxExchangeTests(TestCase):
 
         # Simulate all components but account_id not initialized
         self.exchange._account_id = None
-        self.exchange._order_book_tracker._order_books_initialized.set()
+        self.exchange.order_book_tracker._order_books_initialized.set()
         self.exchange._account_balances = {}
         self._simulate_trading_rules_initialized()
         self.exchange._user_stream_tracker.data_source._last_recv_time = 0
@@ -1704,7 +1750,8 @@ class NdaxExchangeTests(TestCase):
             order_type=OrderType.LIMIT,
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
-            amount=Decimal(1.0))
+            amount=Decimal(1.0),
+            creation_timestamp=1640001112.0)
 
         self.exchange._in_flight_orders.update({
             order.client_order_id: order
@@ -1720,7 +1767,8 @@ class NdaxExchangeTests(TestCase):
             order_type=OrderType.LIMIT,
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
-            amount=Decimal(1.0))
+            amount=Decimal(1.0),
+            creation_timestamp=1640001112.0)
 
         order_json = order.to_json()
 
@@ -1740,6 +1788,7 @@ class NdaxExchangeTests(TestCase):
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
             amount=Decimal(1.0),
+            creation_timestamp=1640001112.0,
             initial_state="FullyExecuted"
         )
 
@@ -1757,7 +1806,8 @@ class NdaxExchangeTests(TestCase):
             order_type=OrderType.LIMIT,
             trade_type=TradeType.BUY,
             price=Decimal(10.0),
-            amount=Decimal(1.0))
+            amount=Decimal(1.0),
+            creation_timestamp=1640001112.0)
 
         order_json = order.to_json()
 
@@ -1778,3 +1828,9 @@ class NdaxExchangeTests(TestCase):
 
         self.assertTrue("Error: The exchange API request limit has been reached (original error 'TOO MANY REQUESTS')"
                         in f"{exception_context.exception}")
+
+    def test_start_network_warning_is_logged(self):
+        self.async_run_with_timeout(self.exchange.start_network())
+
+        self.assertTrue(self._is_logged('WARNING', "This exchange connector does not provide trades feed. "
+                                                   "Strategies which depend on it will not work properly."))

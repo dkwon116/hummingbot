@@ -1,12 +1,6 @@
 import logging
 # import copy
-from typing import (
-    Dict,
-    List,
-    Optional,
-    Any,
-    AsyncIterable,
-)
+from typing import TYPE_CHECKING, Any, AsyncIterable, Dict, List, Optional
 from decimal import Decimal
 import asyncio
 import json
@@ -21,6 +15,7 @@ from hummingbot.core.clock import Clock
 from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.cancellation_result import CancellationResult
+from hummingbot.core.data_type.common import OpenOrder, OrderType, TradeType
 from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.data_type.limit_order import LimitOrder
 from hummingbot.core.event.events import (
@@ -31,22 +26,22 @@ from hummingbot.core.event.events import (
     OrderCancelledEvent,
     BuyOrderCreatedEvent,
     SellOrderCreatedEvent,
-    MarketOrderFailureEvent,
-    OrderType,
-    TradeType,
-    TradeFee
+    MarketOrderFailureEvent
 )
 from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.connector.exchange.gopax.gopax_order_book_tracker import GopaxOrderBookTracker
+from hummingbot.connector.exchange.gopax.gopax_api_order_book_data_source import GopaxAPIOrderBookDataSource
 from hummingbot.connector.exchange.gopax.gopax_user_stream_tracker import GopaxUserStreamTracker
 from hummingbot.connector.exchange.gopax.gopax_websocket_adaptor import GopaxWebSocketAdaptor
 from hummingbot.connector.exchange.gopax.gopax_auth import GopaxAuth
 from hummingbot.connector.exchange.gopax.gopax_in_flight_order import GopaxInFlightOrder
-from hummingbot.connector.exchange.gopax import gopax_utils
-from hummingbot.connector.exchange.gopax import gopax_constants as CONSTANTS
-from hummingbot.core.data_type.common import OpenOrder
+from hummingbot.connector.exchange.gopax import gopax_constants as CONSTANTS, gopax_utils
+from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount
 from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 # from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
+
+if TYPE_CHECKING:
+    from hummingbot.client.config.config_helpers import ClientConfigAdapter
 
 ctce_logger = None
 s_decimal_NaN = Decimal("nan")
@@ -72,6 +67,7 @@ class GopaxExchange(ExchangeBase):
         return ctce_logger
 
     def __init__(self,
+                 client_config_map: "ClientConfigAdapter",
                  gopax_api_key: str,
                  gopax_secret_key: str,
                  trading_pairs: Optional[List[str]] = None,
@@ -83,7 +79,7 @@ class GopaxExchange(ExchangeBase):
         :param trading_pairs: The market trading pairs which to track order book data.
         :param trading_required: Whether actual trading is needed.
         """
-        super().__init__()
+        super().__init__(client_config_map)
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
         self._gopax_auth = GopaxAuth(gopax_api_key, gopax_secret_key)
@@ -276,17 +272,6 @@ class GopaxExchange(ExchangeBase):
         self.logger().info(f"Update trading rules for {self._trading_pairs}")
 
         instrument_info: List[Dict[str, Any]] = await self._api_request("get", CONSTANTS.GET_TICKER_URL, {}, True)
-        # instrument_info: List[Dict[str, Any]] = await self._api_request(
-        #     method="GET",
-        #     CONSTANTS.GET_TICKER_URL
-        # )
-        # print(instrument_info)
-
-        # for inst in instrument_info:
-        #     for price in instrument_prices:
-        #         if inst["name"] == price["name"]:
-        #             inst["price"] = price["close"]
-
         self._trading_rules.clear()
         self._trading_rules = self._format_trading_rules(instrument_info)
 
@@ -537,6 +522,7 @@ class GopaxExchange(ExchangeBase):
                                    amount,
                                    price,
                                    order_id,
+                                   tracked_order.creation_timestamp,
                                    exchange_order_id
                                ))
         except asyncio.CancelledError:
@@ -571,7 +557,8 @@ class GopaxExchange(ExchangeBase):
             order_type=order_type,
             trade_type=trade_type,
             price=price,
-            amount=amount
+            amount=amount,
+            creation_timestamp=self.current_timestamp
         )
 
     def stop_tracking_order(self, order_id: str):
@@ -781,7 +768,10 @@ class GopaxExchange(ExchangeBase):
                 tracked_order.order_type,
                 Decimal(str(trade_msg["price"])),
                 Decimal(str(trade_msg["baseAmount"])),
-                TradeFee(0.0, [(tracked_order.quote_asset, Decimal(str(fee_paid)))]),
+                # TradeFee(0.0, [(tracked_order.quote_asset, Decimal(str(fee_paid)))]),
+                AddedToCostTradeFee(
+                    flat_fees=[TokenAmount(tracked_order.quote_asset, fee_paid)]
+                ),
                 exchange_trade_id=trade_msg["id"]
             )
         )
@@ -800,10 +790,8 @@ class GopaxExchange(ExchangeBase):
                                            tracked_order.client_order_id,
                                            tracked_order.base_asset,
                                            tracked_order.quote_asset,
-                                           tracked_order.fee_asset,
                                            tracked_order.executed_amount_base,
                                            tracked_order.executed_amount_quote,
-                                           tracked_order.fee_paid,
                                            tracked_order.order_type))
             self.stop_tracking_order(tracked_order.client_order_id)
 
@@ -837,7 +825,7 @@ class GopaxExchange(ExchangeBase):
         except Exception:
             self.logger().network(
                 f"Unexpected error cancelling orders.",
-                app_warning_msg="Failed to cancel order on ftx. Check API key and network connection."
+                app_warning_msg="Failed to cancel order on Gopax. Check API key and network connection."
             )
 
         return cancellation_results
@@ -864,14 +852,15 @@ class GopaxExchange(ExchangeBase):
                 order_type: OrderType,
                 order_side: TradeType,
                 amount: Decimal,
-                price: Decimal = s_decimal_NaN) -> TradeFee:
+                price: Decimal = s_decimal_NaN,
+                is_maker: Optional[bool] = None) -> AddedToCostTradeFee:
         """
         To get trading fee, this function is simplified by using fee override configuration. Most parameters to this
         function are ignore except order_type. Use OrderType.LIMIT_MAKER to specify you want trading fee for
         maker order.
         """
         is_maker = order_type is OrderType.LIMIT_MAKER
-        return TradeFee(percent=self.estimate_fee_pct(is_maker))
+        return AddedToCostTradeFee(percent=self.estimate_fee_pct(is_maker))
 
     async def get_open_orders(self) -> List[OpenOrder]:
         result = await self._api_request("get", CONSTANTS.GET_OPEN_ORDERS_PATH_URL, {}, True)
@@ -940,3 +929,7 @@ class GopaxExchange(ExchangeBase):
         amount = Decimal(str(account_position_event["avail"] + account_position_event["hold"]))
         self._account_balances[token] = amount
         self._account_available_balances[token] = Decimal(str(account_position_event["avail"]))
+
+    async def all_trading_pairs(self) -> List[str]:
+        # This method should be removed and instead we should implement _initialize_trading_pair_symbol_map
+        return await GopaxAPIOrderBookDataSource.fetch_trading_pairs()

@@ -1,9 +1,9 @@
 from typing import Optional, Union
 from datetime import datetime, timezone
 from urllib.parse import urlencode
+from pydantic import Field, SecretStr
 
-from hummingbot.client.config.config_methods import using_exchange
-from hummingbot.client.config.config_var import ConfigVar
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap, ClientFieldData
 from hummingbot.connector.exchange.bithumb import bithumb_constants as CONSTANTS
 from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
 
@@ -14,7 +14,7 @@ HBOT_BROKER_ID = "HBOT-"
 
 # NDAX fees: https://bithumb.io/fees
 # Fees have to be expressed as percent value
-DEFAULT_FEES = [0.05, 0.05]
+DEFAULT_FEES = [0.04, 0.04]
 
 
 # USE_ETHEREUM_WALLET not required because default value is false
@@ -176,17 +176,45 @@ def validate_price(price: Union[int, float, str]) -> float:
     unit = get_price_increments(price)    
     return price - (price % unit)
 
-KEYS = {
-    "bithumb_api_key":
-        ConfigVar(key="bithumb_api_key",
-                  prompt="Enter your Bithumb API key >>> ",
-                  required_if=using_exchange("bithumb"),
-                  is_secure=True,
-                  is_connect_key=True),
-    "bithumb_secret_key":
-        ConfigVar(key="bithumb_secret_key",
-                  prompt="Enter your Bithumb secret key >>> ",
-                  required_if=using_exchange("bithumb"),
-                  is_secure=True,
-                  is_connect_key=True),
-}
+# KEYS = {
+#     "bithumb_api_key":
+#         ConfigVar(key="bithumb_api_key",
+#                   prompt="Enter your Bithumb API key >>> ",
+#                   required_if=using_exchange("bithumb"),
+#                   is_secure=True,
+#                   is_connect_key=True),
+#     "bithumb_secret_key":
+#         ConfigVar(key="bithumb_secret_key",
+#                   prompt="Enter your Bithumb secret key >>> ",
+#                   required_if=using_exchange("bithumb"),
+#                   is_secure=True,
+#                   is_connect_key=True),
+# }
+
+
+class BithumbConfigMap(BaseConnectorConfigMap):
+    connector: str = Field(default="bithumb", client_data=None)
+    bithumb_api_key: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your Bithumb API key",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+    bithumb_secret_key: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your Bithumb secret key",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+
+    class Config:
+        title = "bithumb"
+
+
+KEYS = BithumbConfigMap.construct()

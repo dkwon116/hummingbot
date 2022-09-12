@@ -7,24 +7,24 @@ from functools import partial
 from typing import Awaitable, Dict
 
 from aioresponses import aioresponses
-from hummingbot.connector.exchange.kraken.kraken_exchange import KrakenExchange
 
-from hummingbot.connector.exchange.kraken.kraken_in_flight_order import KrakenInFlightOrderNotCreated
+from hummingbot.client.config.client_config_map import ClientConfigMap
+from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.exchange.kraken import kraken_constants as CONSTANTS
+from hummingbot.connector.exchange.kraken.kraken_exchange import KrakenExchange
+from hummingbot.connector.exchange.kraken.kraken_in_flight_order import KrakenInFlightOrderNotCreated
+from hummingbot.connector.test_support.network_mocking_assistant import NetworkMockingAssistant
 from hummingbot.core.clock import Clock, ClockMode
-
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.event.event_logger import EventLogger
 from hummingbot.core.event.events import (
-    TradeType,
-    OrderType,
-    MarketEvent,
     BuyOrderCompletedEvent,
     BuyOrderCreatedEvent,
-    SellOrderCreatedEvent,
+    MarketEvent,
     OrderCancelledEvent,
+    SellOrderCreatedEvent,
 )
 from hummingbot.core.network_iterator import NetworkStatus
-from test.hummingbot.connector.network_mocking_assistant import NetworkMockingAssistant
 
 
 class KrakenExchangeTest(unittest.TestCase):
@@ -41,7 +41,10 @@ class KrakenExchangeTest(unittest.TestCase):
         self.mocking_assistant = NetworkMockingAssistant()
         self.event_listener = EventLogger()
         not_a_real_secret = "kQH5HW/8p1uGOVjbgWA7FunAmGO8lsSUXNsu3eow76sz84Q18fWxnyRzBHCd3pd5nE9qa99HAZtuZuj6F1huXg=="
+        self.client_config_map = ClientConfigAdapter(ClientConfigMap())
+
         self.exchange = KrakenExchange(
+            client_config_map=self.client_config_map,
             kraken_api_key="someKey",
             kraken_secret_key=not_a_real_secret,
             trading_pairs=[self.trading_pair],
@@ -261,7 +264,7 @@ class KrakenExchangeTest(unittest.TestCase):
     @aioresponses()
     def test_check_network_success(self, mock_api):
         url = f"{CONSTANTS.BASE_URL}{CONSTANTS.TIME_PATH_URL}"
-        resp = {}
+        resp = {"status": 200, "result": []}
         mock_api.get(url, body=json.dumps(resp))
 
         ret = self.async_run_with_timeout(coroutine=self.exchange.check_network())
@@ -279,7 +282,7 @@ class KrakenExchangeTest(unittest.TestCase):
     @aioresponses()
     def test_check_network_not_connected_for_error_status(self, mock_api):
         url = f"{CONSTANTS.BASE_URL}{CONSTANTS.TIME_PATH_URL}"
-        resp = {}
+        resp = {"status": 405, "result": []}
         mock_api.get(url, status=405, body=json.dumps(resp))
 
         ret = self.async_run_with_timeout(coroutine=self.exchange.check_network())

@@ -1,4 +1,4 @@
-from hummingbot.client.config.config_var import ConfigVar
+
 from hummingbot.client.config.config_validators import (
     validate_market_trading_pair,
     validate_connector,
@@ -7,18 +7,17 @@ from hummingbot.client.config.config_validators import (
     validate_int,
     validate_bool
 )
-from hummingbot.client.settings import (
-    required_exchanges,
-    requried_connector_trading_pairs,
-    AllConnectorSettings,
-)
-import hummingbot.client.settings as settings
+
 from decimal import Decimal
+import hummingbot.client.settings as settings
 from hummingbot.client.config.config_helpers import parse_cvar_value
+
+from hummingbot.client.config.config_var import ConfigVar
+from hummingbot.client.settings import AllConnectorSettings, required_exchanges, requried_connector_trading_pairs
 
 
 def exchange_on_validated(value: str) -> None:
-    required_exchanges.append(value)
+    required_exchanges.add(value)
 
 
 def spot_market_validator(value: str) -> None:
@@ -99,7 +98,7 @@ spot_perpetual_arbitrage_config_map = {
         on_validated=spot_market_on_validated),
     "perpetual_connector": ConfigVar(
         key="perpetual_connector",
-        prompt="Enter a derivative name (Exchange/AMM) >>> ",
+        prompt="Enter a derivative connector >>> ",
         prompt_on_new=True,
         validator=validate_derivative,
         on_validated=exchange_on_validated),

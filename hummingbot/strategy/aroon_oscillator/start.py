@@ -127,5 +127,5 @@ def start(self):
             osc_distribution = osc_distribution
         )
     except Exception as e:
-        self._notify(str(e))
+        self.notify(str(e))
         self.logger().error("Unknown error during initialization.", exc_info=True)

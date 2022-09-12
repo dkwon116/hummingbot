@@ -6,7 +6,7 @@ import time
 from collections import defaultdict
 from decimal import Decimal
 from enum import Enum
-from typing import Any, AsyncIterable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterable, Dict, List, Optional
 from urllib.parse import urlencode
 from math import (floor)
 
@@ -20,6 +20,9 @@ from hummingbot.connector.derivative.binance_perp_coin.binance_perp_coin_in_flig
 )
 from hummingbot.connector.derivative.binance_perp_coin.binance_perp_coin_order_book_tracker import (
     BinancePerpCoinOrderBookTracker
+)
+from hummingbot.connector.derivative.binance_perp_coin.binance_perp_coin_api_order_book_data_source import (
+    BinancePerpCoinAPIOrderBookDataSource
 )
 from hummingbot.connector.derivative.binance_perp_coin.binance_perp_coin_user_stream_tracker import (
     BinancePerpCoinUserStreamTracker
@@ -37,26 +40,25 @@ from hummingbot.core.data_type.order_book import OrderBook
 from hummingbot.core.event.events import (
     BuyOrderCompletedEvent,
     BuyOrderCreatedEvent,
-    FundingInfo,
     FundingPaymentCompletedEvent,
     MarketEvent,
     MarketOrderFailureEvent,
     OrderCancelledEvent,
     OrderFilledEvent,
-    OrderType,
-    PositionAction,
-    PositionMode,
-    PositionSide,
     SellOrderCompletedEvent,
     SellOrderCreatedEvent,
-    TradeType
 )
+from hummingbot.core.data_type.common import OrderType, PositionAction, PositionMode, PositionSide, TradeType
+from hummingbot.core.data_type.funding_info import FundingInfo
 from hummingbot.core.network_iterator import NetworkStatus
+from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount, TradeFeeBase
 from hummingbot.core.utils.async_utils import safe_ensure_future, safe_gather
 from hummingbot.core.utils.estimate_fee import estimate_fee
 from hummingbot.logger import HummingbotLogger
-from hummingbot.client.config.global_config_map import global_config_map
 
+
+if TYPE_CHECKING:
+    from hummingbot.client.config.config_helpers import ClientConfigAdapter
 
 class MethodType(Enum):
     GET = "GET"
@@ -87,7 +89,8 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
     ORDER_NOT_EXIST_CONFIRMATION_COUNT = 3
     HEARTBEAT_TIME_INTERVAL = 30.0
     ONE_HOUR_INTERVAL = 3600.0
-    BROKER_ID = global_config_map["binance_broker_id"].value
+    # BROKER_ID = global_config_map["binance_broker_id"].value
+    BROKER_ID = "DK"
 
     @classmethod
     def logger(cls) -> HummingbotLogger:
@@ -97,6 +100,7 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
         return bpm_logger
 
     def __init__(self,
+                 client_config_map: "ClientConfigAdapter",
                  binance_perp_coin_api_key: str = None,
                  binance_perp_coin_api_secret: str = None,
                  trading_pairs: Optional[List[str]] = None,
@@ -110,8 +114,8 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
         self._throttler = AsyncThrottler(CONSTANTS.RATE_LIMITS)
         self._domain = domain
 
-        ExchangeBase.__init__(self)
-        PerpetualTrading.__init__(self)
+        ExchangeBase.__init__(self, client_config_map=client_config_map)
+        PerpetualTrading.__init__(self, self._trading_pairs)
         BinanceTime.get_instance().start()
 
         self._user_stream_tracker = BinancePerpCoinUserStreamTracker(api_key=self._api_key, domain=self._domain, throttler=self._throttler)
@@ -296,6 +300,8 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
                                            amount,
                                            price,
                                            order_id,
+                                           tracked_order.creation_timestamp,
+                                           exchange_order_id,
                                            leverage=self._leverage[trading_pair],
                                            position=position_action.name))
             return order_result
@@ -475,7 +481,8 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
             price=price,
             amount=amount,
             leverage=leverage,
-            position=position
+            position=position,
+            created_at=self.current_timestamp
 
         )
 
@@ -517,6 +524,22 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
                     # Execution Type: Trade => Filled
                     trade_type = TradeType.BUY if order_message.get("S") == "BUY" else TradeType.SELL
                     if order_message.get("X") in ["PARTIALLY_FILLED", "FILLED"]:
+                        fee_asset = order_message.get("N", tracked_order.quote_asset)
+                        fee_amount = Decimal(order_message.get("n", "0"))
+                        position_side = order_message.get("ps", "LONG")
+                        position_action = (PositionAction.OPEN
+                                           if (tracked_order.trade_type is TradeType.BUY and position_side == "LONG"
+                                               or tracked_order.trade_type is TradeType.SELL and position_side == "SHORT")
+                                           else PositionAction.CLOSE)
+                        flat_fees = [] if fee_amount == Decimal("0") else [TokenAmount(amount=fee_amount, token=fee_asset)]
+
+                        fee = TradeFeeBase.new_perpetual_fee(
+                            fee_schema=self.trade_fee_schema(),
+                            position_action=position_action,
+                            percent_token=fee_asset,
+                            flat_fees=flat_fees,
+                        )
+
                         order_filled_event = OrderFilledEvent(
                             timestamp=event_message.get("E") * 1e-3,
                             order_id=client_order_id,
@@ -525,15 +548,8 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
                             order_type=OrderType.LIMIT if order_message.get("o") == "LIMIT" else OrderType.MARKET,
                             price=Decimal(order_message.get("L")),
                             amount=Decimal(order_message.get("l")),
+                            trade_fee=fee,
                             leverage=self._leverage[utils.convert_from_exchange_trading_pair(order_message.get("s"))],
-                            trade_fee=self.get_fee(
-                                base_currency=tracked_order.base_asset,
-                                quote_currency=tracked_order.quote_asset,
-                                order_type=tracked_order.order_type,
-                                order_side=trade_type,
-                                amount=Decimal(order_message.get("q")),
-                                price=Decimal(order_message.get("p"))
-                            ),
                             exchange_trade_id=order_message.get("t"),
                             position=tracked_order.position
                         )
@@ -556,10 +572,8 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
                                                            client_order_id,
                                                            tracked_order.base_asset,
                                                            tracked_order.quote_asset,
-                                                           (tracked_order.fee_asset or tracked_order.quote_asset),
                                                            tracked_order.executed_amount_base,
                                                            tracked_order.executed_amount_quote,
-                                                           tracked_order.fee_paid,
                                                            tracked_order.order_type))
                         else:
                             if tracked_order.is_cancelled:
@@ -877,27 +891,33 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
                     order_id = str(trade.get("orderId"))
                     if order_id in order_map:
                         tracked_order = order_map.get(order_id)
+                        position_side = trade["positionSide"]
+                        position_action = (PositionAction.OPEN
+                                           if (tracked_order.trade_type is TradeType.BUY and position_side == "LONG"
+                                               or tracked_order.trade_type is TradeType.SELL and position_side == "SHORT")
+                                           else PositionAction.CLOSE)
+                        fee = TradeFeeBase.new_perpetual_fee(
+                            fee_schema=self.trade_fee_schema(),
+                            position_action=position_action,
+                            percent_token=trade["commissionAsset"],
+                            flat_fees=[TokenAmount(amount=Decimal(trade["commission"]), token=trade["commissionAsset"])]
+                        )
+
                         order_type = tracked_order.order_type
                         applied_trade = tracked_order.update_with_trade_updates(trade)
                         if applied_trade:
                             self.trigger_event(
                                 self.MARKET_ORDER_FILLED_EVENT_TAG,
                                 OrderFilledEvent(
-                                    self.current_timestamp,
-                                    tracked_order.client_order_id,
-                                    tracked_order.trading_pair,
-                                    tracked_order.trade_type,
-                                    order_type,
-                                    Decimal(trade.get("price")),
-                                    Decimal(trade.get("qty")),
-                                    self.get_fee(
-                                        tracked_order.base_asset,
-                                        tracked_order.quote_asset,
-                                        order_type,
-                                        tracked_order.trade_type,
-                                        Decimal(trade["price"]),
-                                        Decimal(trade["qty"])),
-                                    exchange_trade_id=trade["id"],
+                                    timestamp=self.current_timestamp,
+                                    order_id=tracked_order.client_order_id,
+                                    trading_pair=tracked_order.trading_pair,
+                                    trade_type=tracked_order.trade_type,
+                                    order_type=order_type,
+                                    price=Decimal(trade.get("price")),
+                                    amount=Decimal(trade.get("qty")),
+                                    trade_fee=fee,
+                                    exchange_trade_id=str(trade["id"]),
                                     leverage=self._leverage[tracked_order.trading_pair],
                                     position=tracked_order.position
                                 )
@@ -964,10 +984,8 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
                                                        client_order_id,
                                                        tracked_order.base_asset,
                                                        tracked_order.quote_asset,
-                                                       (tracked_order.fee_asset or tracked_order.base_asset),
                                                        executed_amount_base,
                                                        executed_amount_quote,
-                                                       tracked_order.fee_paid,
                                                        order_type))
                     else:
                         if tracked_order.is_cancelled:
@@ -1134,3 +1152,7 @@ class BinancePerpCoinDerivative(ExchangeBase, PerpetualTrading):
 
     async def _sleep(self, delay: float):
         await asyncio.sleep(delay)
+
+    async def all_trading_pairs(self) -> List[str]:
+        # This method should be removed and instead we should implement _initialize_trading_pair_symbol_map
+        return await BinancePerpCoinAPIOrderBookDataSource.fetch_trading_pairs()

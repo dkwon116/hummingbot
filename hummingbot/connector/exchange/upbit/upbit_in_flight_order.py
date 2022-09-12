@@ -5,10 +5,7 @@ from typing import (
     Optional,
 )
 import asyncio
-from hummingbot.core.event.events import (
-    OrderType,
-    TradeType
-)
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.connector.in_flight_order_base import InFlightOrderBase
 
 
@@ -21,6 +18,7 @@ class UpbitInFlightOrder(InFlightOrderBase):
                  trade_type: TradeType,
                  price: Decimal,
                  amount: Decimal,
+                 creation_timestamp: float,
                  initial_state: str = "OPEN"):
         super().__init__(
             client_order_id,
@@ -30,6 +28,7 @@ class UpbitInFlightOrder(InFlightOrderBase):
             trade_type,
             price,
             amount,
+            creation_timestamp,
             initial_state,
         )
         self.trade_id_set = set()
@@ -70,6 +69,7 @@ class UpbitInFlightOrder(InFlightOrderBase):
                 trade_type=getattr(TradeType, data["trade_type"]),
                 price=Decimal(data["price"]),
                 amount=Decimal(data["amount"]),
+                creation_timestamp=float(data["created_at"] if "created_at" in data else 0),
                 initial_state=data["last_state"]
             )
         retval.executed_amount_base = Decimal(data["executed_amount_base"])

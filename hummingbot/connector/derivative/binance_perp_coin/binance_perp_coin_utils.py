@@ -3,6 +3,11 @@ import re
 import hummingbot.connector.derivative.binance_perp_coin.constants as CONSTANTS
 
 from typing import Optional, Tuple
+from decimal import Decimal
+from pydantic import Field, SecretStr
+
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap, ClientFieldData
+from hummingbot.core.data_type.trade_fee import TradeFeeSchema
 
 from hummingbot.client.config.config_var import ConfigVar
 from hummingbot.client.config.config_methods import using_exchange
@@ -11,7 +16,11 @@ from hummingbot.core.utils.tracking_nonce import get_tracking_nonce
 
 CENTRALIZED = True
 EXAMPLE_PAIR = "BTC-USDT"
-DEFAULT_FEES = [0.02, 0.04]
+DEFAULT_FEES = TradeFeeSchema(
+    maker_percent_fee_decimal=Decimal("0.0001"),
+    taker_percent_fee_decimal=Decimal("0.0005"),
+    buy_percent_fee_deducted_from_returns=True
+)
 SPECIAL_PAIRS = re.compile(r"^(BAT|BNB|HNT|ONT|OXT|USDT|VET)(USD)$")
 RE_4_LETTERS_QUOTE = re.compile(r"^(\w{2,})(BIDR|BKRW|BUSD|BVND|IDRT|TUSD|USDC|USDS|USDT)$")
 RE_3_LETTERS_QUOTE = re.compile(r"^(\w+)(\w{3})$")
@@ -97,22 +106,74 @@ KEYS = {
 
 }
 
+class BinancePerpCoinConfigMap(BaseConnectorConfigMap):
+    connector: str = Field(default="binance_perp_coin", client_data=None)
+    binance_perp_coin_api_key: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your Binance Perpetual Coin API key",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+    binance_perp_coin_api_secret: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your Binance Perpetual Coin API secret",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+
+
+KEYS = BinancePerpCoinConfigMap.construct()
+
 OTHER_DOMAINS = ["binance_perp_coin_testnet"]
 OTHER_DOMAINS_PARAMETER = {"binance_perp_coin_testnet": "binance_perp_coin_testnet"}
 OTHER_DOMAINS_EXAMPLE_PAIR = {"binance_perp_coin_testnet": "BTC-USDT"}
 OTHER_DOMAINS_DEFAULT_FEES = {"binance_perp_coin_testnet": [0.02, 0.04]}
-OTHER_DOMAINS_KEYS = {"binance_perp_coin_testnet": {
-    # add keys for testnet
-    "binance_perp_coin_testnet_api_key":
-        ConfigVar(key="binance_perp_coin_testnet_api_key",
-                  prompt="Enter your Binance Perpetual testnet API key >>> ",
-                  required_if=using_exchange("binance_perp_coin_testnet"),
-                  is_secure=True,
-                  is_connect_key=True),
-    "binance_perp_coin_testnet_api_secret":
-        ConfigVar(key="binance_perp_coin_testnet_api_secret",
-                  prompt="Enter your Binance Perpetual testnet API secret >>> ",
-                  required_if=using_exchange("binance_perp_coin_testnet"),
-                  is_secure=True,
-                  is_connect_key=True),
-}}
+# OTHER_DOMAINS_KEYS = {"binance_perp_coin_testnet": {
+#     # add keys for testnet
+#     "binance_perp_coin_testnet_api_key":
+#         ConfigVar(key="binance_perp_coin_testnet_api_key",
+#                   prompt="Enter your Binance Perpetual testnet API key >>> ",
+#                   required_if=using_exchange("binance_perp_coin_testnet"),
+#                   is_secure=True,
+#                   is_connect_key=True),
+#     "binance_perp_coin_testnet_api_secret":
+#         ConfigVar(key="binance_perp_coin_testnet_api_secret",
+#                   prompt="Enter your Binance Perpetual testnet API secret >>> ",
+#                   required_if=using_exchange("binance_perp_coin_testnet"),
+#                   is_secure=True,
+#                   is_connect_key=True),
+# }}
+
+
+class BinancePerpCoinTestnetConfigMap(BaseConnectorConfigMap):
+    connector: str = Field(default="binance_perp_coin_testnet", client_data=None)
+    binance_perp_coin_testnet_api_key: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your Binance PerpCoin testnet API key",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+    binance_perp_coin_testnet_api_secret: SecretStr = Field(
+        default=...,
+        client_data=ClientFieldData(
+            prompt=lambda cm: "Enter your Binance PerpCoin testnet API secret",
+            is_secure=True,
+            is_connect_key=True,
+            prompt_on_new=True,
+        )
+    )
+
+    class Config:
+        title = "binance_perp_coin"
+
+
+OTHER_DOMAINS_KEYS = {"binance_perp_coin_testnet": BinancePerpCoinTestnetConfigMap.construct()}
