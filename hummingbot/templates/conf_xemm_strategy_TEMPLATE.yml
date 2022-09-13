@@ -110,3 +110,7 @@ order_level_amount: null
 
 # Order price space between orders (if order_levels > 1).
 order_level_spread: null
+
+price_source: null
+price_source_exchange: null
+price_source_market: null

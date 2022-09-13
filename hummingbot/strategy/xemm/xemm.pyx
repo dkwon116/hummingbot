@@ -77,9 +77,9 @@ cdef class XEMMStrategy(StrategyBase):
                     market_pairs: List[CrossExchangeMarketPair],
                     min_profitability: Decimal,
                     order_amount: Optional[Decimal] = Decimal("0.0"),
-                    order_size_taker_volume_factor: Decimal = Decimal("0.25"),
+                    order_size_taker_volume_factor: Decimal = Decimal("1.0"),
                     order_size_taker_balance_factor: Decimal = Decimal("1.0"),
-                    order_size_portfolio_ratio_limit: Decimal = Decimal("0.1667"),
+                    order_size_portfolio_ratio_limit: Decimal = Decimal("1.0"),
                     limit_order_min_expiration: float = 130.0,
                     adjust_order_enabled: bool = True,
                     anti_hysteresis_duration: float = 60.0,
@@ -209,6 +209,7 @@ cdef class XEMMStrategy(StrategyBase):
         self._order_level_amount = order_level_amount
 
         self._asset_price_delegate = asset_price_delegate
+        self._initial_base_asset = s_decimal_zero
 
         self._maker_order_ids = []
         cdef:
@@ -227,6 +228,10 @@ cdef class XEMMStrategy(StrategyBase):
     @property
     def min_profitability(self):
         return self._min_profitability
+    
+    @min_profitability.setter
+    def min_profitability(self, value):
+        self._min_profitability = value
 
     @property
     def active_limit_orders(self) -> List[Tuple[ExchangeBase, LimitOrder]]:
@@ -352,6 +357,10 @@ cdef class XEMMStrategy(StrategyBase):
     @property
     def enable_best_price(self):
         return self._enable_best_price
+    
+    @enable_best_price.setter
+    def enable_best_price(self, value):
+        self._enable_best_price = value
 
     @property
     def order_levels(self) -> int:
@@ -394,6 +403,14 @@ cdef class XEMMStrategy(StrategyBase):
     @order_level_spread.setter
     def order_level_spread(self, value: Decimal):
         self._order_level_spread = value
+    
+    @property
+    def asset_price_delegate(self) -> AssetPriceDelegate:
+        return self._asset_price_delegate
+
+    @asset_price_delegate.setter
+    def asset_price_delegate(self, value):
+        self._asset_price_delegate = value
 
     @logging_options.setter
     def logging_options(self, int64_t logging_options):
@@ -409,6 +426,23 @@ cdef class XEMMStrategy(StrategyBase):
         else:
             return ratio
 
+    def get_ref_bid_ask_price(self):
+        price_provider = self._asset_price_delegate
+
+        bid = price_provider.get_price_by_type(PriceType.BestBid)
+        ask = price_provider.get_price_by_type(PriceType.BestAsk)
+
+        return bid, ask
+
+    def get_last_trade_price(self, market_pair):
+        maker_last = market_pair.maker.get_price_by_type(PriceType.LastTrade)
+        taker_last = market_pair.taker.get_price_by_type(PriceType.LastTrade)
+        delegate_last = None
+
+        if self._asset_price_delegate is not None:
+            delegate_last = self._asset_price_delegate.get_price_by_type(PriceType.LastTrade)
+
+        return maker_last, taker_last, delegate_last
 
     def get_taker_to_maker_conversion_rate(self) -> Tuple[str, Decimal, str, Decimal]:
         """
@@ -442,26 +476,17 @@ cdef class XEMMStrategy(StrategyBase):
         maker = market_pair.maker
         taker = market_pair.taker
         maker_bid, maker_ask, taker_bid, taker_ask = self.c_get_bid_ask_prices(market_pair)
-        # maker_mid = maker.get_mid_price()
-        # taker_mid = taker.get_mid_price()
 
         taker_quote_balance = taker.market.get_available_balance(taker.quote_asset)
         maker_base_balance, maker_quote_balance = self.get_adjusted_available_balance(market_pair)
 
-        total_base = maker_base_balance + taker.base_balance
-        total_quote = maker_quote_balance + taker_quote_balance / taker_bid * maker_ask
-        # total_quote_from_base = total_base * maker_ask
-        # total_base_from_quote = maker_quote_balance / maker_bid + taker_quote_balance / taker_ask
+        total_base = maker.base_balance + taker.base_balance
+        quote_in_maker = maker_quote_balance + (taker_quote_balance / taker_bid * maker_ask)
+        quote_in_taker = (maker_quote_balance / maker_bid * taker_ask) + taker_quote_balance
 
-        # taker_asset_in_base = taker.base_balance + taker_quote_balance / taker_bid
+        balance_ratio = (total_base * maker_ask) / quote_in_maker
 
-        # total_asset_in_base = total_base + total_base_from_quote
-        # total_asset_in_quote = total_quote_from_base + taker.quote_balance + (maker.quote_balance / maker_bid * taker_ask)
-
-        balance_ratio = (total_base * maker_ask) / total_quote
-
-        return total_base, total_quote, balance_ratio
-        # return taker_asset_in_base, total_asset_in_base, total_asset_in_quote
+        return total_base, quote_in_maker, quote_in_taker, balance_ratio
 
     def log_conversion_rates(self, market_pair):
         quote_pair, quote_rate_source, quote_rate, base_pair, base_rate_source, base_rate = \
@@ -505,6 +530,49 @@ cdef class XEMMStrategy(StrategyBase):
 
         return pd.DataFrame(data=data, columns=columns)
 
+
+    def premium_status_df(self):
+        """
+        Fixed show absolute premium 
+        EMA adjusted percent does not represent profit, but current center
+        """
+        market_pair = list(self._market_pairs.values())[0]
+        maker_market = market_pair.maker.market
+        taker_market = market_pair.taker.market
+        tm, mt = self.c_calculate_premium(market_pair, False)
+        adj_tm, adj_mt = self.c_calculate_premium(market_pair, True)
+        
+        columns = [f"{maker_market.display_name}", f"{taker_market.display_name}", "Current", "Ratio", "Target", "Target Ratio", "Price"]
+        data = []
+
+        ema = Decimal(self._ema.current_value)
+        taker_hedge_sell_price = self.c_calculate_effective_hedging_price(market_pair, True, self._order_amount)
+        taker_hedge_buy_price = self.c_calculate_effective_hedging_price(market_pair, False, self._order_amount)
+
+        entry_target = self._sell_profit
+        entry_ratio = ema * (1 + self._sell_profit)
+        entry_price = taker_hedge_buy_price * (1 + self.get_profitability(market_pair, False))
+        tp_target = self._buy_profit
+        tp_ratio = ema / (1 + self._buy_profit)
+        tp_price = taker_hedge_sell_price / (1 + self.get_profitability(market_pair, True))
+
+        # if self._entry_status.current_entry_ratio > s_decimal_zero and self._use_min_profit:
+        #     entry_ratio = max(self._entry_status.current_entry_ratio, entry_ratio) if not self._is_grid else self._entry_status.current_entry_ratio
+        #     entry_target = entry_ratio / ema - 1
+        #     entry_price = (taker_hedge_buy_price / self.market_conversion_rate(True)) * Decimal(entry_ratio)
+        
+        # if self._entry_status.average_ratio > s_decimal_zero and self._use_min_profit:
+        #     tp_ratio = min(self.get_min_profit_ratio(), tp_ratio) if not self._is_grid else self.get_min_profit_ratio()
+        #     tp_target = 1 - tp_ratio / ema
+        #     tp_price = (taker_hedge_sell_price / self.market_conversion_rate(True)) * Decimal(tp_ratio)
+        
+        data.extend([
+            ["Sell", "Buy", f"{adj_mt:.2%}", f"{ema * (1+adj_mt):.2f}", f"{entry_target:.2%}", f"{entry_ratio:.2f}", f"{entry_price:.4f}"],
+            ["Buy", "Sell", f"{adj_tm:.2%}", f"{ema / (1+adj_tm):.2f}", f"{tp_target:.2%}", f"{tp_ratio:.2f}", f"{tp_price:.4f}"],
+        ])
+
+        return pd.DataFrame(data=data, columns=columns)
+
     def profit_calc_df(self):
         columns = [f"Side", "Profit", "Disparity", "Trend", "Std"]
         data = []
@@ -516,6 +584,34 @@ cdef class XEMMStrategy(StrategyBase):
         ])
 
         return pd.DataFrame(data=data, columns=columns)
+
+    def market_status_data_frame(self, market_trading_pair_tuples) -> pd.DataFrame:
+        markets_data = []
+        markets_columns = ["Exchange", "Market", "Best Bid", "Best Ask", "Last", "Spread"]
+
+        try:
+            if type(self._asset_price_delegate) is OrderBookAssetPriceDelegate:
+                delegate_market = self._asset_price_delegate.market
+                del_tp, del_base, del_quote = delegate_market.trading_pair[self._asset_price_delegate.trading_pair]
+                market_trading_pair_tuples.append((delegate_market, del_tp, del_base, del_quote))
+            for market_trading_pair_tuple in market_trading_pair_tuples:
+                market, trading_pair, base_asset, quote_asset = market_trading_pair_tuple
+                bid_price = market.get_price(trading_pair, False)
+                ask_price = market.get_price(trading_pair, True)
+                spread = (float(ask_price) / float(bid_price) - 1)
+                last_price = market.get_price_by_type(trading_pair, PriceType.LastTrade)
+                markets_data.append([
+                    market.display_name,
+                    trading_pair,
+                    float(bid_price),
+                    float(ask_price),
+                    float(last_price),
+                    f"{spread:.2%}"
+                ])
+            return pd.DataFrame(data=markets_data, columns=markets_columns)
+
+        except Exception:
+            self.logger().error("Error formatting market stats.", exc_info=True)
 
     def format_status(self) -> str:
         cdef:
@@ -540,13 +636,12 @@ cdef class XEMMStrategy(StrategyBase):
             warning_lines.extend(self.network_warning([market_pair.maker, market_pair.taker]))
 
             markets_df = self.market_status_data_frame([market_pair.maker, market_pair.taker])
-            maker_mid, taker_mid = markets_df["Mid"]
-            maker_last, taker_last = markets_df["Last"]
+            maker_last, taker_last, delegate_last = self.get_last_trade_price(market_pair)
 
-            spread_ratio = maker_mid / taker_mid
-            spread_ratio_last = maker_last / taker_last
+            mt_last_ratio = maker_last / taker_last
+            dt_last_ratio = delegate_last / taker_last if delegate_last is not None else s_decimal_zero
 
-            lines.extend(["", f"  Markets: M/T Ratio {spread_ratio:.2f}"] +
+            lines.extend(["", f"  Markets: MT Ratio {mt_last_ratio:.2f} DT Ratio {dt_last_ratio:.2f}"] +
                          ["    " + line for line in str(markets_df).split("\n")])
 
             oracle_df = self.oracle_status_df()
@@ -557,16 +652,11 @@ cdef class XEMMStrategy(StrategyBase):
             assets_df = self.wallet_balance_data_frame([maker, taker])
             maker_quote = maker.quote_asset
             maker_base = maker.base_asset
-            # taker_quote = taker.quote_asset
-            # taker_base = taker.base_asset
-        
-            total_base_asset = assets_df.loc[assets_df["Asset"] == maker_base]["Total Balance"].sum()
-            quote_df = assets_df.loc[assets_df["Asset"] != maker_base]
-            # total_base_from_quote = np.where(quote_df["Asset"] == maker_quote, (quote_df["Total Balance"] / maker_mid), (quote_df["Total Balance"] / taker_mid)).sum()
-            # total_quote_from_base = total_base_from_quote * taker_mid
-            total_base, total_quote, balance_ratio = self.get_total_assets(market_pair)
+            taker_quote = taker.quote_asset
 
-            lines.extend(["", f"  Assets: Total Base {total_base:.4f}{maker_base} Total Quote {total_quote:.2f}{maker_quote} Ratio {balance_ratio:.2f}"] +
+            total_base, quote_in_maker, quote_in_taker, balance_ratio = self.get_total_assets(market_pair)
+
+            lines.extend(["", f"  Assets: Base {total_base:.4f}{maker_base} Maker Quote {quote_in_maker:.2f}{maker_quote} Taker Quote {quote_in_taker:.2f}{taker_quote} Ratio {balance_ratio:.2f}"] +
                          ["    " + line for line in str(assets_df).split("\n")])
 
             factor_df = self.profit_calc_df()
@@ -655,6 +745,15 @@ cdef class XEMMStrategy(StrategyBase):
         StrategyBase.c_start(self, clock, timestamp)
         self._last_timestamp = timestamp
 
+    cdef c_stop(self, Clock clock):
+        market_pair = list(self._market_pairs.values())[0]
+        total_base, quote_in_maker, quote_in_taker, balance_ratio = self.get_total_assets(market_pair)
+        maker_base_balance, maker_quote_balance = self.get_adjusted_available_balance(market_pair)
+        self.logger().info(f"Assets at Stop: Base {total_base:.4f} Quote in Maker {quote_in_maker:.2f} Quote in Taker {quote_in_taker:.2f}")
+        self.logger().info(f"Maker Assets: Base {maker_base_balance} Quote {maker_quote_balance}")
+
+        StrategyBase.c_stop(self, clock)
+
     cdef c_tick(self, double timestamp):
         """
         Clock tick entry point.
@@ -680,6 +779,8 @@ cdef class XEMMStrategy(StrategyBase):
 
             if not self._all_markets_ready:
                 self._all_markets_ready = all([market.ready for market in self._sb_markets])
+                if self._asset_price_delegate is not None and self._all_markets_ready:
+                    self._all_markets_ready = self._asset_price_delegate.ready
                 if not self._all_markets_ready:
                     # Markets not ready yet. Don't do anything.
                     if should_report_warnings:
@@ -772,18 +873,21 @@ cdef class XEMMStrategy(StrategyBase):
 
         global s_decimal_zero
 
-        # ts = datetime.datetime.now()
+        
+        if self._last_conv_rates_logged == 0:
+            self._initial_base_asset, _, _, _ = self.get_total_assets(market_pair)
+
         if self._last_conv_rates_logged + (60. * self._sampling_interval) < self._current_timestamp:
 
             m_bid, m_ask, t_bid, t_ask = self.c_get_bid_ask_prices(market_pair)
-            maker_mid = (m_bid + m_ask) / 2
-            taker_mid = (t_bid + t_ask) / 2
-            mid_ratio = maker_mid / taker_mid
+
+            m_last, t_last, d_last = self.get_last_trade_price(market_pair)
+            last_ratio = m_last / t_last if self._asset_price_delegate is None else d_last / t_last
 
             if self._ema.sampling_length_filled() > 0:
-                self._ema.add_sample(mid_ratio)
-                self._fast_ema.add_sample(mid_ratio)
-                self._std.add_sample(mid_ratio)
+                self._ema.add_sample(last_ratio)
+                self._fast_ema.add_sample(last_ratio)
+                self._std.add_sample(last_ratio)
             else:
                 self.fill_sampling_buffer()
 
@@ -1055,12 +1159,17 @@ cdef class XEMMStrategy(StrategyBase):
 
         global s_decimal_zero
 
+        
+
         if buy_fill_quantity > 0:
             taker_top = taker_market.get_price(taker_trading_pair, False)
             hedged_order_quantity = min(
                 buy_fill_quantity,
                 taker_market.get_available_balance(market_pair.taker.base_asset) 
             )
+            size_quantum = get_order_size_quantum(taker_trading_pair, hedged_order_quantity)
+            hedged_order_quantity = round(hedged_order_quantity / size_quantum) * size_quantum
+
             quantized_hedge_amount = taker_market.quantize_order_amount(taker_trading_pair, Decimal(str(hedged_order_quantity)))
             order_price = taker_market.get_price_for_volume(taker_trading_pair, False, quantized_hedge_amount).result_price
             order_price *= Decimal("1") - self._slippage_buffer
@@ -1091,6 +1200,9 @@ cdef class XEMMStrategy(StrategyBase):
                 taker_market.get_available_balance(market_pair.taker.quote_asset) /
                 market_pair.taker.get_price_for_volume(True, sell_fill_quantity).result_price
             )
+            size_quantum = get_order_size_quantum(taker_trading_pair, hedged_order_quantity)
+            hedged_order_quantity = round(hedged_order_quantity / size_quantum) * size_quantum
+            
             quantized_hedge_amount = taker_market.quantize_order_amount(taker_trading_pair, Decimal(hedged_order_quantity))
             order_price = taker_market.get_price_for_volume(taker_trading_pair, True, quantized_hedge_amount).result_price
             order_price *= Decimal("1") + self._slippage_buffer
@@ -1321,8 +1433,8 @@ cdef class XEMMStrategy(StrategyBase):
             if self._adjust_orders_enabled:
                 # If maker bid order book is not empty
                 if not Decimal.is_nan(price_above_bid_sample):
-                    price_above_bid = price_above_bid if self._enable_best_price else maker_buy_price
-                    maker_buy_price = min(maker_buy_price, price_above_bid_sample, price_above_bid)
+                    best_bid = price_above_bid if self._enable_best_price else (ceil(top_ask_price / price_quantum) - 1) * price_quantum
+                    maker_buy_price = min(maker_buy_price, price_above_bid_sample, best_bid)
 
             price_quantum = maker_market.get_order_price_quantum(
                 market_pair.maker.trading_pair,
@@ -1351,8 +1463,8 @@ cdef class XEMMStrategy(StrategyBase):
             if self._adjust_orders_enabled:
                 # If maker ask order book is not empty
                 if not Decimal.is_nan(price_below_ask_sample):
-                    price_below_ask = price_below_ask if self._enable_best_price else maker_sell_price
-                    maker_sell_price = max(maker_sell_price, price_below_ask_sample, price_below_ask)
+                    best_ask = price_below_ask if self._enable_best_price else (floor(top_bid_price / price_quantum) + 1) * price_quantum
+                    maker_sell_price = max(maker_sell_price, price_below_ask_sample, best_ask)
 
             price_quantum = maker_market.get_order_price_quantum(
                 market_pair.maker.trading_pair,
@@ -1527,18 +1639,6 @@ cdef class XEMMStrategy(StrategyBase):
             self.c_cancel_order(market_pair, active_order.client_order_id)
             return False
         
-        # maker_bid, maker_ask, taker_bid, taker_ask = self.c_get_bid_ask_prices(market_pair)
-        # adj_tm, adj_mt = self.c_calculate_premium(market_pair, True)
-        # if (is_buy and adj_tm > self._buy_profit) or (not is_buy and adj_mt > self._sell_profit):
-        #     if (is_buy and order_price < maker_bid) or (not is_buy and order_price > maker_ask):
-        #         if self._logging_options & self.OPTION_LOG_REMOVING_ORDER:
-        #             # log current profitability
-        #             self.logger().info(
-        #                 f"[Cancel]-Maker-{limit_order_type_str}-Spread-"
-        #                 f"{order_price:.8g} {market_pair.maker.quote_asset} is too far from proper profitable. "
-        #             )
-        #         self.c_cancel_order(market_pair, active_order.client_order_id)
-        #         return False
         return True
 
     cdef bint c_check_if_sufficient_balance(self, object market_pair, LimitOrder active_order):
@@ -1660,8 +1760,8 @@ cdef class XEMMStrategy(StrategyBase):
         maker_market = maker.market
 
         maker_base, maker_quote = self.get_adjusted_available_balance(market_pair)
-        taker_base = taker.market.get_available_balance(taker.base_asset) * Decimal("0.95")
-        taker_quote = taker.market.get_available_balance(taker.quote_asset) * Decimal("0.95")
+        taker_base = taker.market.get_available_balance(taker.base_asset) * self._order_size_taker_balance_factor
+        taker_quote = taker.market.get_available_balance(taker.quote_asset) * self._order_size_taker_balance_factor
 
         # minimum balance 
         # maker quote buy > taker base sell: buy at multiple price, sell at vwap price (how much can buy in base)

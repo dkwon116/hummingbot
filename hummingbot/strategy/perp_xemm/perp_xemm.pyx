@@ -1763,10 +1763,10 @@ cdef class PerpXEMMStrategy(StrategyBase):
             ExchangeBase maker_market = market_pair.maker.market
             ExchangeBase taker_market = market_pair.taker.market
 
-        maker_bid = maker_market.c_get_price(maker_trading_pair, False)
-        maker_ask = maker_market.c_get_price(maker_trading_pair, True)
-        taker_bid = taker_market.c_get_price(taker_trading_pair, False)
-        taker_ask = taker_market.c_get_price(taker_trading_pair, True)
+        maker_bid = maker_market.get_price(maker_trading_pair, False)
+        maker_ask = maker_market.get_price(maker_trading_pair, True)
+        taker_bid = taker_market.get_price(taker_trading_pair, False)
+        taker_ask = taker_market.get_price(taker_trading_pair, True)
 
         return maker_bid, maker_ask, taker_bid, taker_ask
     

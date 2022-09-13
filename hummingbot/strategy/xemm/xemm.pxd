@@ -72,6 +72,8 @@ cdef class XEMMStrategy(StrategyBase):
         object _order_level_spread
         object _order_level_amount
 
+        object _asset_price_delegate
+
     cdef c_process_market_pair(self,
                                object market_pair,
                                list active_ddex_orders)

@@ -1,8 +1,8 @@
 from hummingbot.strategy.maker_taker_market_pair import MakerTakerMarketPair
 
-from .cross_exchange_market_making import CrossExchangeMarketMakingStrategy
+from .xemm import XEMMStrategy
 
 __all__ = [
     MakerTakerMarketPair,
-    CrossExchangeMarketMakingStrategy,
+    XEMMStrategy,
 ]

@@ -13,6 +13,7 @@ from hummingbot.connector.exchange.bithumb.bithumb_auth import BithumbAuth
 from hummingbot.connector.exchange.bithumb.bithumb_order_book_tracker import BithumbOrderBookTracker
 from hummingbot.connector.exchange.bithumb.bithumb_in_flight_order import BithumbInFlightOrder
 from hummingbot.connector.exchange.bithumb.bithumb_api_order_book_data_source import BithumbAPIOrderBookDataSource
+from hummingbot.core.data_type.order_book_tracker import OrderBookTracker
 
 from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.connector.trading_rule import TradingRule
@@ -110,6 +111,10 @@ class BithumbExchange(ExchangeBase):
     @property
     def order_books(self) -> Dict[str, OrderBook]:
         return self._order_book_tracker.order_books
+
+    @property
+    def order_book_tracker(self) -> Optional[OrderBookTracker]:
+        return self._order_book_tracker
 
     @property
     def trading_rules(self) -> Dict[str, TradingRule]:

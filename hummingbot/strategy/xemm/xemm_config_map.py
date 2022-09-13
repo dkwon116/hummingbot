@@ -78,6 +78,42 @@ def update_oracle_settings(value: str):
         settings.rate_oracle_pairs = []
 
 
+def validate_price_source(value: str) -> Optional[str]:
+    if value not in {"current_market", "external_market"}:
+        return "Invalid price source type."
+
+
+def on_validate_price_source(value: str):
+    if value != "external_market":
+        xemm_config_map["price_source_exchange"].value = None
+        xemm_config_map["price_source_market"].value = None
+    if value != "custom_api":
+        pass
+    else:
+        xemm_config_map["price_type"].value = "custom"
+
+
+def price_source_market_prompt() -> str:
+    external_market = xemm_config_map.get("price_source_exchange").value
+    return f'Enter the token trading pair on {external_market} >>> '
+
+
+def validate_price_source_exchange(value: str) -> Optional[str]:
+    if value == xemm_config_map.get("maker_market").value:
+        return "Price source exchange cannot be the same as maker exchange."
+    return validate_exchange(value)
+
+
+def on_validated_price_source_exchange(value: str):
+    if value is None:
+        xemm_config_map["price_source_market"].value = None
+
+
+def validate_price_source_market(value: str) -> Optional[str]:
+    market = xemm_config_map.get("price_source_exchange").value
+    return validate_market_trading_pair(market, value)
+
+
 xemm_config_map = {
     "strategy": ConfigVar(key="strategy",
                           prompt="",
@@ -179,28 +215,28 @@ xemm_config_map = {
         key="order_size_taker_volume_factor",
         prompt="What percentage of hedge-able volume would you like to be traded on the taker market? "
                "(Enter 1 to indicate 1%) >>> ",
-        default=25,
+        default=100,
         type_str="decimal",
         required_if=lambda: False,
-        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=False)
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
     ),
     "order_size_taker_balance_factor": ConfigVar(
         key="order_size_taker_balance_factor",
         prompt="What percentage of asset balance would you like to use for hedging trades on the taker market? "
                "(Enter 1 to indicate 1%) >>> ",
-        default=Decimal("99.5"),
+        default=Decimal("100"),
         type_str="decimal",
         required_if=lambda: False,
-        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=False)
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
     ),
     "order_size_portfolio_ratio_limit": ConfigVar(
         key="order_size_portfolio_ratio_limit",
         prompt="What ratio of your total portfolio value would you like to trade on the maker and taker markets? "
                "Enter 50 for 50% >>> ",
-        default=Decimal("16.67"),
+        default=Decimal("100"),
         type_str="decimal",
         required_if=lambda: False,
-        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=False)
+        validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
     ),
     "use_oracle_conversion_rate": ConfigVar(
         key="use_oracle_conversion_rate",
@@ -236,6 +272,26 @@ xemm_config_map = {
         type_str="decimal",
         validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
     ),
+    "price_source":
+        ConfigVar(key="price_source",
+                  prompt="Which price source to use for ema calculation? (current_market/external_market) >>> ",
+                  type_str="str",
+                  default="current_market",
+                  validator=validate_price_source,
+                  on_validated=on_validate_price_source),
+    "price_source_exchange":
+        ConfigVar(key="price_source_exchange",
+                  prompt="Enter external price source exchange name >>> ",
+                  required_if=lambda: xemm_config_map.get("price_source").value == "external_market",
+                  type_str="str",
+                  validator=validate_price_source_exchange,
+                  on_validated=on_validated_price_source_exchange),
+    "price_source_market":
+        ConfigVar(key="price_source_market",
+                  prompt=price_source_market_prompt,
+                  required_if=lambda: xemm_config_map.get("price_source").value == "external_market",
+                  type_str="str",
+                  validator=validate_price_source_market),
     "ema_length": ConfigVar(
         key="ema_length",
         prompt="Sampling length of regression (interval set as 5m)>>> ",

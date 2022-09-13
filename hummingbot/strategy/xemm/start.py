@@ -10,6 +10,10 @@ from hummingbot.strategy.xemm.xemm import XEMMStrategy
 from hummingbot.strategy.xemm.xemm_config_map import \
     xemm_config_map as xemm_map
 
+from hummingbot.connector.exchange.paper_trade import create_paper_trade_market
+from hummingbot.strategy.order_book_asset_price_delegate import OrderBookAssetPriceDelegate
+from hummingbot.connector.exchange_base import ExchangeBase
+
 
 def start(self):
     maker_market = xemm_map.get("maker_market").value.lower()
@@ -51,6 +55,17 @@ def start(self):
     order_levels = xemm_map.get("order_levels").value
     order_level_amount = xemm_map.get("order_level_amount").value
     order_level_spread = xemm_map.get("order_level_spread").value / Decimal('100')
+
+    price_source = xemm_map.get("price_source").value
+    price_source_exchange = xemm_map.get("price_source_exchange").value
+    price_source_market = xemm_map.get("price_source_market").value
+
+    asset_price_delegate = None
+    if price_source == "external_market":
+        asset_trading_pair: str = price_source_market
+        ext_market = create_paper_trade_market(price_source_exchange, self.client_config_map, [asset_trading_pair])
+        self.markets[price_source_exchange]: ExchangeBase = ext_market
+        asset_price_delegate = OrderBookAssetPriceDelegate(ext_market, asset_trading_pair)
 
     # check if top depth tolerance is a list or if trade size override exists
     if isinstance(top_depth_tolerance, list) or "trade_size_override" in xemm_map:
@@ -125,4 +140,6 @@ def start(self):
         order_levels=order_levels,
         order_level_spread=order_level_spread,
         order_level_amount=order_level_amount,
+        
+        asset_price_delegate=asset_price_delegate,
     )
