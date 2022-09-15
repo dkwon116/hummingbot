@@ -209,7 +209,7 @@ cdef class XEMMStrategy(StrategyBase):
         self._order_level_amount = order_level_amount
 
         self._asset_price_delegate = asset_price_delegate
-        self._initial_base_asset = s_decimal_zero
+        # self._initial_base_asset = s_decimal_zero
 
         self._maker_order_ids = []
         cdef:
@@ -874,8 +874,8 @@ cdef class XEMMStrategy(StrategyBase):
         global s_decimal_zero
 
         
-        if self._last_conv_rates_logged == 0:
-            self._initial_base_asset, _, _, _ = self.get_total_assets(market_pair)
+        # if self._last_conv_rates_logged == 0:
+        #     self._initial_base_asset, _, _, _ = self.get_total_assets(market_pair)
 
         if self._last_conv_rates_logged + (60. * self._sampling_interval) < self._current_timestamp:
 
@@ -1167,7 +1167,7 @@ cdef class XEMMStrategy(StrategyBase):
                 buy_fill_quantity,
                 taker_market.get_available_balance(market_pair.taker.base_asset) 
             )
-            size_quantum = get_order_size_quantum(taker_trading_pair, hedged_order_quantity)
+            size_quantum = taker_market.get_order_size_quantum(taker_trading_pair, hedged_order_quantity)
             hedged_order_quantity = round(hedged_order_quantity / size_quantum) * size_quantum
 
             quantized_hedge_amount = taker_market.quantize_order_amount(taker_trading_pair, Decimal(str(hedged_order_quantity)))
@@ -1200,7 +1200,7 @@ cdef class XEMMStrategy(StrategyBase):
                 taker_market.get_available_balance(market_pair.taker.quote_asset) /
                 market_pair.taker.get_price_for_volume(True, sell_fill_quantity).result_price
             )
-            size_quantum = get_order_size_quantum(taker_trading_pair, hedged_order_quantity)
+            size_quantum = taker_market.get_order_size_quantum(taker_trading_pair, hedged_order_quantity)
             hedged_order_quantity = round(hedged_order_quantity / size_quantum) * size_quantum
             
             quantized_hedge_amount = taker_market.quantize_order_amount(taker_trading_pair, Decimal(hedged_order_quantity))
