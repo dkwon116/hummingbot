@@ -97,6 +97,7 @@ class BinancePerpetualUserStreamDataSource(UserStreamTrackerDataSource):
                 time_synchronizer=self._time_synchronizer,
                 domain=self._domain,
                 params={"listenKey": self._current_listen_key},
+                is_auth_required=True,
                 method=RESTMethod.PUT,
                 return_err=True)
 

@@ -666,7 +666,7 @@ class GopaxExchange(ExchangeBase):
 
             trade_history_tasks = []
             for trading_pair in self._trading_pairs:
-                query_string = f"?tradingPairName={trading_pair}&after={self._last_poll_timestamp - self.UPDATE_ORDER_STATUS_MIN_INTERVAL*2}"
+                query_string = f"?tradingPairName={trading_pair}&after={int(self._last_poll_timestamp - self.UPDATE_ORDER_STATUS_MIN_INTERVAL*2)}"
                 trade_history_tasks.append(
                     asyncio.create_task(self._api_request(
                         method="get",

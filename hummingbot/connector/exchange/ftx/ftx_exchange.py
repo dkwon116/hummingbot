@@ -22,6 +22,7 @@ from hummingbot.core.data_type.user_stream_tracker_data_source import UserStream
 from hummingbot.core.utils.estimate_fee import build_trade_fee
 from hummingbot.core.web_assistant.auth import AuthBase
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
+from hummingbot.core.utils.async_utils import safe_gather
 
 if TYPE_CHECKING:
     from hummingbot.client.config.config_helpers import ClientConfigAdapter
@@ -130,9 +131,10 @@ class FtxExchange(ExchangePyBase):
             "market": await self.exchange_symbol_associated_to_pair(trading_pair),
             "side": trade_type.name.lower(),
             "price": float(price),
-            "type": "market" if trade_type == OrderType.MARKET else "limit",
+            "type": "market" if order_type == OrderType.MARKET else "limit",
             "size": float(amount),
             "clientId": order_id,
+            "postOnly": True if order_type != OrderType.MARKET else False
         }
         order_result = await self._api_post(
             path_url=CONSTANTS.FTX_PLACE_ORDER_PATH,
@@ -257,6 +259,31 @@ class FtxExchange(ExchangePyBase):
             except Exception:
                 self.logger().exception(f"Error parsing the trading pair rule {rule}. Skipping.")
         return retval
+
+    async def _status_polling_loop_fetch_updates(self):
+        """
+        Modified to only call order status update
+        FTX only provides order status from user steam (balance check should be shorter interval)
+        """
+        await safe_gather(self._update_order_status())
+
+    async def _lost_orders_update_polling_loop(self):
+        """
+        Moved update balance from status polling for lost orders for shorter interval check
+        """
+        while True:
+            try:
+                await self._update_all_balances()
+                await self._cancel_lost_orders()
+                await self._update_lost_orders_status()
+                await self._sleep(self.SHORT_POLL_INTERVAL)
+            except NotImplementedError:
+                raise
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger().exception("Unexpected error while updating the time synchronizer")
+                await self._sleep(0.5)
 
     async def _update_balances(self):
         msg = await self._api_request(
