@@ -65,7 +65,9 @@ cdef class XEMMStrategy(StrategyBase):
         object _buy_profit
         object _sell_profit
 
+        bint _take_if_crossed
         bint _enable_best_price
+        bint _use_within_range
         int _order_levels
         int _buy_levels
         int _sell_levels
@@ -73,6 +75,19 @@ cdef class XEMMStrategy(StrategyBase):
         object _order_level_amount
 
         object _asset_price_delegate
+        object _delegate_for
+        object _initial_base_asset
+        object _initial_taker_quote_asset
+        object _initial_maker_quote_asset
+        double _last_trade_fill
+        bint _balancer_active
+        
+        bint _is_grid
+        int _no_levels
+        list _ratio_levels
+        list _base_inv_levels
+        int _current_level
+        object _bot_id
 
     cdef c_process_market_pair(self,
                                object market_pair,

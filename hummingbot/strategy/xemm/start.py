@@ -37,7 +37,11 @@ def start(self):
     taker_to_maker_quote_conversion_rate = xemm_map.get("taker_to_maker_quote_conversion_rate").value
     slippage_buffer = xemm_map.get("slippage_buffer").value / Decimal("100")
     
+    bot_id = xemm_map["bot_id"].value
+    is_grid = xemm_map["is_grid"].value
     enable_reg_offset = xemm_map["enable_reg_offset"].value
+    take_if_crossed = xemm_map["take_if_crossed"].value
+    use_within_range = xemm_map["use_within_range"].value
     fixed_beta = xemm_map.get("fixed_beta").value / Decimal("100")
 
     ema_length = xemm_map.get("ema_length").value
@@ -59,6 +63,7 @@ def start(self):
     price_source = xemm_map.get("price_source").value
     price_source_exchange = xemm_map.get("price_source_exchange").value
     price_source_market = xemm_map.get("price_source_market").value
+    delegate_for = xemm_map.get("delegate_for").value
 
     asset_price_delegate = None
     if price_source == "external_market":
@@ -122,7 +127,6 @@ def start(self):
         taker_to_maker_quote_conversion_rate=taker_to_maker_quote_conversion_rate,
         slippage_buffer=slippage_buffer,
         hb_app_notification=True,
-        enable_reg_offset=enable_reg_offset,
         fixed_beta=fixed_beta,
 
         ema_length=ema_length,
@@ -132,14 +136,22 @@ def start(self):
         std_length=std_length,
         sampling_interval=sampling_interval,
 
+        bot_id=bot_id,
+        is_grid=is_grid,
+        enable_best_price=enable_best_price,
+        use_within_range=use_within_range,
+        enable_reg_offset=enable_reg_offset,
+        take_if_crossed=take_if_crossed,
+
         disparity_sensitivity=disparity_sensitivity,
         disparity_factor=disparity_factor,
         std_factor=std_factor,
         trend_factor=trend_factor,
-        enable_best_price=enable_best_price,
+        
         order_levels=order_levels,
         order_level_spread=order_level_spread,
         order_level_amount=order_level_amount,
         
         asset_price_delegate=asset_price_delegate,
+        delegate_for=delegate_for
     )

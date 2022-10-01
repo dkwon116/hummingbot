@@ -93,6 +93,7 @@ std_length: null
 sampling_interval: null
 
 enable_reg_offset: null
+use_within_range: null
 fixed_beta: null
 
 disparity_sensitivity: null
@@ -114,3 +115,7 @@ order_level_spread: null
 price_source: null
 price_source_exchange: null
 price_source_market: null
+delegate_for: null
+is_grid: null
+take_if_crossed: null
+bot_id: null

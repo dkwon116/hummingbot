@@ -114,6 +114,11 @@ def validate_price_source_market(value: str) -> Optional[str]:
     return validate_market_trading_pair(market, value)
 
 
+def validate_delegate_for(value: str):
+    if value not in ["maker", "taker"]:
+        return "Delegation need to be for either maker or taker"
+
+
 xemm_config_map = {
     "strategy": ConfigVar(key="strategy",
                           prompt="",
@@ -272,6 +277,12 @@ xemm_config_map = {
         type_str="decimal",
         validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
     ),
+    "bot_id": ConfigVar(
+        key="bot_id",
+        prompt="What is the bot id to be logged on db? >>> ",
+        type_str="str",
+        default="bot_id"
+    ),
     "price_source":
         ConfigVar(key="price_source",
                   prompt="Which price source to use for ema calculation? (current_market/external_market) >>> ",
@@ -292,6 +303,14 @@ xemm_config_map = {
                   required_if=lambda: xemm_config_map.get("price_source").value == "external_market",
                   type_str="str",
                   validator=validate_price_source_market),
+    "delegate_for": ConfigVar(
+        key="delegate_for",
+        prompt="Which market is price source delegated for (maker, taker) >>> ",
+        type_str="str",
+        default="maker",
+        required_if=lambda: xemm_config_map.get("price_source").value == "external_market",
+        validator=validate_delegate_for,
+    ),
     "ema_length": ConfigVar(
         key="ema_length",
         prompt="Sampling length of regression (interval set as 5m)>>> ",
@@ -334,10 +353,38 @@ xemm_config_map = {
         type_str="decimal",
         validator=lambda v: validate_decimal(v, Decimal(0), Decimal(3000), inclusive=True)
     ),
+    "is_grid": ConfigVar(
+        key="is_grid",
+        prompt="Use grid strategy?>>> ",
+        default=False,
+        validator=lambda v: validate_bool(v),
+        type_str="bool",
+    ),
     "enable_reg_offset": ConfigVar(
         key="enable_reg_offset",
         prompt="Use linear regression beta as offset (rolling regression)>>> ",
         default=False,
+        validator=lambda v: validate_bool(v),
+        type_str="bool",
+    ),
+    "enable_best_price": ConfigVar(
+        key="enable_best_price",
+        prompt="Use price above bid ask for best price? >>> ",
+        default=False,
+        validator=lambda v: validate_bool(v),
+        type_str="bool",
+    ),
+    "take_if_crossed": ConfigVar(
+        key="take_if_crossed",
+        prompt="Get best price even if price is taker? >>> ",
+        default=False,
+        validator=lambda v: validate_bool(v),
+        type_str="bool",
+    ),
+    "use_within_range": ConfigVar(
+        key="use_within_range",
+        prompt="Use order placement for within range only? >>> ",
+        default=True,
         validator=lambda v: validate_bool(v),
         type_str="bool",
     ),
@@ -379,13 +426,6 @@ xemm_config_map = {
         type_str="decimal",
         required_if=lambda: False,
         validator=lambda v: validate_decimal(v, Decimal(0), Decimal(100), inclusive=True)
-    ),
-    "enable_best_price": ConfigVar(
-        key="enable_best_price",
-        prompt="Use price above bid ask for best price? >>> ",
-        default=False,
-        validator=lambda v: validate_bool(v),
-        type_str="bool",
     ),
     "order_levels":
         ConfigVar(key="order_levels",
