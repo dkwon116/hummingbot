@@ -1163,8 +1163,6 @@ cdef class PerpXEMMStrategy(StrategyBase):
         maker = market_pair.maker
         taker = market_pair.taker
         
-        # base_diff = self._entry_status.get_maker_taker_base_diff()
-        
         if self._is_coin_marginated:
             maker_entry = self._entry_status.get_entry_value("maker", "base")
             taker_bought = taker.market.get_value_from_contract(taker.trading_pair, self.perp_positions[0].amount) / self.perp_positions[0].entry_price if len(self.perp_positions) > 0 else s_decimal_zero
@@ -1196,8 +1194,6 @@ cdef class PerpXEMMStrategy(StrategyBase):
         # tether: sell amount == abs(position_amount)
         if self.maker_taker_balancing_needed(market_pair):
             taker = market_pair.taker
-            # base_diff = self._entry_status.get_maker_taker_base_diff()
-            # taker_diff_value = base_diff * taker.get_mid_price()
             base_diff, taker_diff_value = self.maker_taker_balance_diffs(market_pair)
             balancing_is_buy = taker_diff_value > s_decimal_zero
 
@@ -1493,7 +1489,6 @@ cdef class PerpXEMMStrategy(StrategyBase):
             self.balance_maker_taker_positions(market_pair)
             return
         
-        
         if self._entry_status.update_ratio:
             if not self.maker_taker_balancing_needed(market_pair):
                 prev_ratio = self._entry_status.average_ratio
@@ -1506,7 +1501,7 @@ cdef class PerpXEMMStrategy(StrategyBase):
                         self._entry_status.update_entry("taker", s_decimal_zero, s_decimal_zero)
                     self.logger().info(f"[Level]-Taker balanced {self._entry_status.taker_entry}")
                 self._entry_status.update_entry_ratio()
-                self.logger().info(f"[Level]-entry ratio updated to {self._entry_status.average_ratio:.2f} from {prev_ratio:.2f}")
+                self.logger().info(f"[Level]-Entry ratio updated to {self._entry_status.average_ratio:.2f} from {prev_ratio:.2f}")
         
         if self._entry_status.set_bo_ratio:
             if not self.maker_taker_balancing_needed(market_pair):
@@ -1530,7 +1525,7 @@ cdef class PerpXEMMStrategy(StrategyBase):
         quote_asset = trading_pair[1]
         base_amount = Decimal(order_filled_event.amount)
         price = Decimal(order_filled_event.price)
-        trade_fee = Decimal(order_filled_event.trade_fee["flat_fees"][0]["amount"]) if market is "Maker" else s_decimal_zero
+        trade_fee = Decimal(order_filled_event.trade_fee.flat_fees[0].amount) if market is "Maker" else s_decimal_zero
 
         self.logger().info(f"[Filled]-{market}-{trade_type}-{base_amount}-{base_asset}-[Price]-{price:.4f}-[Fee]-{trade_fee}-[ID]-{order_id}-{exchange.name}")
 
@@ -1911,29 +1906,27 @@ cdef class PerpXEMMStrategy(StrategyBase):
         if self._order_amount and self._order_amount > 0:
             base_order_size = self._order_amount
             current_level = self._entry_status.current_entry_level
+            current_base_fill = self._entry_status.get_entry_value("maker", "base")
             levels = self._order_levels
             if is_buy:
                 # full buy when level is zero or completely filled
                 if current_level == 0 or (current_level == 1 and levels[current_level]["filled"] < Decimal("0.05")):
-                    remaining_amount = base_order_size
+                    remaining_amount = current_base_fill
                 # if level 1 and less than 5% buy max
                 # if level greater than 2 and less than 5% buy up to prev level
                 elif (current_level > 1 and current_level < len(levels) and levels[current_level]["filled"] < Decimal("0.05")) or current_level >= len(levels):
                     prev_level_amount = levels[current_level - 2]["cum_amount"]
-                    # remaining_amount = (self._entry_status.get_entry_value("maker", "base") - prev_level_amount) * Decimal("0.98")
-                    remaining_amount = (self._entry_status.get_entry_value("maker", "base") - prev_level_amount)
+                    remaining_amount = (current_base_fill - prev_level_amount)
                 else:
                     prev_level_amount = levels[current_level - 1]["cum_amount"]
-                    # remaining_amount = (self._entry_status.get_entry_value("maker", "base") - prev_level_amount) * Decimal("0.98")
-                    remaining_amount = (self._entry_status.get_entry_value("maker", "base") - prev_level_amount)
+                    remaining_amount = (current_base_fill - prev_level_amount)
             else:
                 # full sell when in last level
                 if current_level >= len(levels):
                     remaining_amount = base_order_size
                 else:
-                    current_level_amount = levels[current_level]["cum_amount"]
                     # remaining_amount = (current_level_amount - self._entry_status.get_entry_value("maker", "base")) * Decimal("1.02")
-                    remaining_amount = (current_level_amount - self._entry_status.get_entry_value("maker", "base")) + self.get_minimum_order_size(market_pair)
+                    remaining_amount = levels[current_level]["cum_amount"] * Decimal("1.05") - current_base_fill
             
             base_order_size = max(min(base_order_size, remaining_amount), self.get_minimum_order_size(market_pair))
             return maker_market.quantize_order_amount(trading_pair, Decimal(base_order_size))

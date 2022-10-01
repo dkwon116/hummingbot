@@ -3,7 +3,7 @@ from typing import (
     Tuple
 )
 from decimal import Decimal
-from hummingbot.client.config.global_config_map import global_config_map
+# from hummingbot.client.config.global_config_map import global_config_map
 from hummingbot.strategy.market_trading_pair_tuple import MarketTradingPairTuple
 from hummingbot.strategy.perp_xemm.perp_xemm_market_pair import CrossExchangeMarketPair
 from hummingbot.strategy.perp_xemm.perp_xemm import PerpXEMMStrategy
@@ -15,6 +15,7 @@ from hummingbot.connector.exchange_base import ExchangeBase
 
 
 def start(self):
+    # c_map = self.strategy_config_map
     bot_id = perp_xemm_map.get("bot_id").value
     reset_balance_when_initializing = perp_xemm_map.get("reset_balance_when_initializing").value
     use_min_profit = perp_xemm_map.get("use_min_profit").value
@@ -26,7 +27,8 @@ def start(self):
     raw_taker_trading_pair = perp_xemm_map.get("taker_market_trading_pair").value
     min_profitability = perp_xemm_map.get("min_profitability").value / Decimal("100")
     order_amount = perp_xemm_map.get("order_amount").value
-    strategy_report_interval = global_config_map.get("strategy_report_interval").value
+    strategy_report_interval = self.client_config_map.strategy_report_interval
+    # strategy_report_interval = global_config_map.get("strategy_report_interval").value
     limit_order_min_expiration = perp_xemm_map.get("limit_order_min_expiration").value
     cancel_order_threshold = perp_xemm_map.get("cancel_order_threshold").value / Decimal("100")
     active_order_canceling = perp_xemm_map.get("active_order_canceling").value
