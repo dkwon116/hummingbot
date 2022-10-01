@@ -308,6 +308,3 @@ class PerformanceMetrics:
 
         self.total_pnl = self.trade_pnl - self.fee_in_quote
         self.return_pct = self.divide(self.total_pnl, self.hold_value)
-
-        self.quote_pnl = self.tot_vol_quote + (self.tot_vol_base * self.cur_price) - self.fee_in_quote
-        self.base_pnl = self.tot_vol_base + (self.tot_vol_quote / self.cur_price) - (self.fee_in_quote / self.cur_price)

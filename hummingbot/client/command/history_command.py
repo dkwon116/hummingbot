@@ -172,10 +172,6 @@ class HistoryCommand:
             [["Total P&L               ", f"{PerformanceMetrics.smart_round(perf.total_pnl, precision)} {quote}"],
              ["Return %                ", f"{perf.return_pct:.2%}"]]
         )
-        perf_data.extend(
-            [["Quote P&L                ", f"{PerformanceMetrics.smart_round(perf.quote_pnl, precision)} {quote}"],
-             ["Base P&L                 ", f"{PerformanceMetrics.smart_round(perf.base_pnl, precision)} {base}"]]
-        )
         perf_df: pd.DataFrame = pd.DataFrame(data=perf_data)
         lines.extend(["", "  Performance:"] +
                      ["    " + line for line in perf_df.to_string(index=False, header=False).split("\n")])
