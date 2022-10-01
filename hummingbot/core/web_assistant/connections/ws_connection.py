@@ -86,9 +86,6 @@ class WSConnection:
         return msg
 
     async def _check_msg_types(self, msg: aiohttp.WSMessage) -> Optional[aiohttp.WSMessage]:
-        if msg.type != aiohttp.WSMsgType.TEXT:
-            print(msg)
-
         msg = await self._check_msg_closed_type(msg)
         msg = await self._check_msg_ping_type(msg)
         msg = await self._check_msg_pong_type(msg)
